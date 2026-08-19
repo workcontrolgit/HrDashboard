@@ -1,5 +1,4 @@
 @page "/"
-@rendermode InteractiveServer
 @using HrDashboard.Agents
 @using HrDashboard.Agents.Models
 @using MudBlazor
@@ -107,6 +106,13 @@
                 <MudText Style="white-space:pre-wrap;font-family:monospace;font-size:0.8rem">@_rawText</MudText>
             </MudExpansionPanel>
         </MudExpansionPanels>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_rawText) && _metrics.Count == 0)
+    {
+        <MudPaper Elevation="2" Class="pa-4">
+            <MudText Style="white-space:pre-wrap">@_rawText</MudText>
+        </MudPaper>
     }
 
 </MudContainer>

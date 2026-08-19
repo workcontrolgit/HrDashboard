@@ -15,7 +15,15 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
-    // ── 2. Azure Key Vault in Production ─────────────────────────────────────
+    // ── 2. User secrets (always — so local dev works in Production mode) ────
+
+    builder.Configuration.AddUserSecrets<Program>(optional: true);
+
+    // ── 3. Static web assets (NuGet _content/ e.g. MudBlazor) ───────────────
+
+    builder.WebHost.UseStaticWebAssets();
+
+    // ── 3. Azure Key Vault in Production ─────────────────────────────────────
 
     if (builder.Environment.IsProduction())
     {
@@ -91,7 +99,8 @@ try
     app.UseStaticFiles();
     app.UseAntiforgery();
     app.MapRazorComponents<HrDashboard.Web.Components.App>()
-        .AddInteractiveServerRenderMode();
+        .AddInteractiveServerRenderMode()
+        .WithStaticAssets();
 
     await app.RunAsync();
 }
