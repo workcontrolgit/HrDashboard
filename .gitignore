@@ -3,3 +3,6 @@ bin/
 logs/
 *.user
 .vs/
+.claude/
+.codegraph/
+.wolf/
