@@ -1,0 +1,15 @@
+@inherits LayoutComponentBase
+
+<MudThemeProvider />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <MudAppBar Elevation="1" Color="Color.Primary">
+        <MudText Typo="Typo.h6">HR Analytics Portal</MudText>
+    </MudAppBar>
+    <MudMainContent Class="pt-4">
+        @Body
+    </MudMainContent>
+</MudLayout>
