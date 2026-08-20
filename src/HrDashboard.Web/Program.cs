@@ -1,12 +1,13 @@
 using Azure.Identity;
 using HrDashboard.Agents;
+using HrDashboard.Infrastructure;
+using HrDashboard.Infrastructure.Repositories;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using MudBlazor.Services;
 using OllamaSharp;
 using Serilog;
-
-// ── 1. Bootstrap Serilog ─────────────────────────────────────────────────────
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -16,15 +17,8 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
-    // ── 2. User secrets (always — so local dev works in Production mode) ────
-
     builder.Configuration.AddUserSecrets<Program>(optional: true);
-
-    // ── 3. Static web assets (NuGet _content/ e.g. MudBlazor) ───────────────
-
     builder.WebHost.UseStaticWebAssets();
-
-    // ── 3. Azure Key Vault in Production ─────────────────────────────────────
 
     if (builder.Environment.IsProduction())
     {
@@ -32,22 +26,42 @@ try
         if (!string.IsNullOrWhiteSpace(vaultUri))
         {
             builder.Configuration.AddAzureKeyVault(
-                new Uri(vaultUri),
-                new DefaultAzureCredential());
-            Log.Information("Azure Key Vault configuration loaded from {Uri}", vaultUri);
+                new Uri(vaultUri), new DefaultAzureCredential());
+            Log.Information("Azure Key Vault loaded from {Uri}", vaultUri);
         }
         else
         {
-            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault in Production");
+            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault");
         }
     }
 
-    // ── 3. Serilog from appsettings ───────────────────────────────────────────
-
     builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
 
-    // ── 4. IChatClient — Ollama (Dev) / Azure OpenAI (Prod) ──────────────────
+    // ── SQL Server + Identity ────────────────────────────────────────────────
+    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
 
+    builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connStr));
+
+    builder.Services.AddIdentity<AppUser, IdentityRole>(o =>
+    {
+        o.Password.RequireDigit = false;
+        o.Password.RequireUppercase = false;
+        o.Password.RequireNonAlphanumeric = false;
+        o.Password.RequiredLength = 6;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddDefaultTokenProviders();
+
+    builder.Services.ConfigureApplicationCookie(o =>
+    {
+        o.LoginPath = "/login";
+        o.AccessDeniedPath = "/login";
+    });
+
+    builder.Services.AddScoped<IConversationRepository, ConversationRepository>();
+
+    // ── IChatClient ──────────────────────────────────────────────────────────
     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
 
     builder.Services.AddSingleton<IChatClient>(_ =>
@@ -66,13 +80,10 @@ try
             return azureClient.GetChatClient(deployment).AsIChatClient();
         }
 
-        // Default: Ollama
         var ollamaEndpoint = builder.Configuration["AI:Ollama:Endpoint"] ?? "http://localhost:11434";
         var model          = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
         return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), model);
     });
-
-    // ── 5. HrAgentService — scoped per Blazor circuit ────────────────────────
 
     builder.Services.AddScoped<IHrAgentService>(sp =>
     {
@@ -82,21 +93,23 @@ try
         return new HrAgentService(chatClient, endpoint, logger);
     });
 
-    // ── 6. DbContext — TEMP registration for EF migration scaffolding (replaced by Task 6) ──
+    // ChatSessionService registered in Task 13
+    // builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
 
-    // TEMP: DbContext registration for EF migration scaffolding — replaced by Task 6
-    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
-        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
-    builder.Services.AddDbContext<HrDashboard.Infrastructure.AppDbContext>(o =>
-        o.UseSqlServer(connStr));
-
-    // ── 7. Blazor + MudBlazor ─────────────────────────────────────────────────
-
+    // ── Blazor + MudBlazor ───────────────────────────────────────────────────
     builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
     builder.Services.AddMudServices();
+    builder.Services.AddCascadingAuthenticationState();
 
     var app = builder.Build();
+
+    // ── Auto-migrate on startup ───────────────────────────────────────────────
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.MigrateAsync();
+    }
 
     if (!app.Environment.IsDevelopment())
     {
@@ -106,7 +119,17 @@ try
 
     app.UseHttpsRedirection();
     app.UseStaticFiles();
+    app.UseAuthentication();
+    app.UseAuthorization();
     app.UseAntiforgery();
+
+    // ── Logout endpoint ──────────────────────────────────────────────────────
+    app.MapGet("/account/logout", async (SignInManager<AppUser> signInManager) =>
+    {
+        await signInManager.SignOutAsync();
+        return Results.LocalRedirect("/login");
+    });
+
     app.MapRazorComponents<HrDashboard.Web.Components.App>()
         .AddInteractiveServerRenderMode()
         .WithStaticAssets();
