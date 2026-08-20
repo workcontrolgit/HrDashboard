@@ -7,5 +7,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/HrDashboard.McpServer.Tests/HrDashboard.McpServer.Tests.csproj" />
+    <Project Path="tests/HrDashboard.Agents.Tests/HrDashboard.Agents.Tests.csproj" />
   </Folder>
 </Solution>
