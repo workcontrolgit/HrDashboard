@@ -1,0 +1,263 @@
+diff --git a/src/HrDashboard.Web/Components/App.razor b/src/HrDashboard.Web/Components/App.razor
+index 4ceecc1..c0d46c1 100644
+--- a/src/HrDashboard.Web/Components/App.razor
++++ b/src/HrDashboard.Web/Components/App.razor
+@@ -4,15 +4,17 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <title>HR Analytics Portal</title>
+     <base href="/" />
+     <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+     <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+     <link rel="stylesheet" href="app.css" />
+     <HeadOutlet />
+ </head>
+ <body>
+-    <Routes @rendermode="InteractiveServer" />
++    <CascadingAuthenticationState>
++        <Routes @rendermode="InteractiveServer" />
++    </CascadingAuthenticationState>
+     <script src="_framework/blazor.web.js"></script>
+     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+ </body>
+ </html>
+diff --git a/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor b/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor
+new file mode 100644
+index 0000000..dd6076a
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor
+@@ -0,0 +1,8 @@
++@inject NavigationManager Nav
++
++@code {
++    protected override void OnInitialized()
++    {
++        Nav.NavigateTo("/login", forceLoad: false);
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/Routes.razor b/src/HrDashboard.Web/Components/Routes.razor
+index 6c97c99..5f29ba9 100644
+--- a/src/HrDashboard.Web/Components/Routes.razor
++++ b/src/HrDashboard.Web/Components/Routes.razor
+@@ -1,6 +1,10 @@
+ <Router AppAssembly="typeof(App).Assembly">
+     <Found Context="routeData">
+-        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
++        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
++            <NotAuthorized>
++                <RedirectToLogin />
++            </NotAuthorized>
++        </AuthorizeRouteView>
+         <FocusOnNavigate RouteData="routeData" Selector="h1" />
+     </Found>
+ </Router>
+diff --git a/src/HrDashboard.Web/Components/_Imports.razor b/src/HrDashboard.Web/Components/_Imports.razor
+index 158a408..275bd98 100644
+--- a/src/HrDashboard.Web/Components/_Imports.razor
++++ b/src/HrDashboard.Web/Components/_Imports.razor
+@@ -1,13 +1,15 @@
+ @using Microsoft.AspNetCore.Components
++@using Microsoft.AspNetCore.Components.Authorization
+ @using Microsoft.AspNetCore.Components.Routing
+ @using Microsoft.AspNetCore.Components.Web
+ @using static Microsoft.AspNetCore.Components.Web.RenderMode
+ @using Microsoft.AspNetCore.Components.Web.Virtualization
+ @using Microsoft.AspNetCore.Components.Forms
+ @using HrDashboard.Web.Components
+ @using HrDashboard.Web.Components.Layout
+ @using HrDashboard.Web.Components.Pages
++@using HrDashboard.Web.Services
+ @using MudBlazor
+ @using HrDashboard.Agents
+ @using HrDashboard.Agents.Models
+ @using Microsoft.Extensions.Logging
+diff --git a/src/HrDashboard.Web/Program.cs b/src/HrDashboard.Web/Program.cs
+index 4086fa7..b0e801f 100644
+--- a/src/HrDashboard.Web/Program.cs
++++ b/src/HrDashboard.Web/Program.cs
+@@ -1,119 +1,142 @@
+ using Azure.Identity;
+ using HrDashboard.Agents;
++using HrDashboard.Infrastructure;
++using HrDashboard.Infrastructure.Repositories;
++using Microsoft.AspNetCore.Identity;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.AI;
+ using MudBlazor.Services;
+ using OllamaSharp;
+ using Serilog;
+ 
+-// ── 1. Bootstrap Serilog ─────────────────────────────────────────────────────
+-
+ Log.Logger = new LoggerConfiguration()
+     .WriteTo.Console()
+     .CreateBootstrapLogger();
+ 
+ try
+ {
+     var builder = WebApplication.CreateBuilder(args);
+ 
+-    // ── 2. User secrets (always — so local dev works in Production mode) ────
+-
+     builder.Configuration.AddUserSecrets<Program>(optional: true);
+-
+-    // ── 3. Static web assets (NuGet _content/ e.g. MudBlazor) ───────────────
+-
+     builder.WebHost.UseStaticWebAssets();
+ 
+-    // ── 3. Azure Key Vault in Production ─────────────────────────────────────
+-
+     if (builder.Environment.IsProduction())
+     {
+         var vaultUri = builder.Configuration["AzureKeyVault:VaultUri"];
+         if (!string.IsNullOrWhiteSpace(vaultUri))
+         {
+             builder.Configuration.AddAzureKeyVault(
+-                new Uri(vaultUri),
+-                new DefaultAzureCredential());
+-            Log.Information("Azure Key Vault configuration loaded from {Uri}", vaultUri);
++                new Uri(vaultUri), new DefaultAzureCredential());
++            Log.Information("Azure Key Vault loaded from {Uri}", vaultUri);
+         }
+         else
+         {
+-            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault in Production");
++            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault");
+         }
+     }
+ 
+-    // ── 3. Serilog from appsettings ───────────────────────────────────────────
+-
+     builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+ 
+-    // ── 4. IChatClient — Ollama (Dev) / Azure OpenAI (Prod) ──────────────────
++    // ── SQL Server + Identity ────────────────────────────────────────────────
++    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
++        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
++
++    builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connStr));
++
++    builder.Services.AddIdentity<AppUser, IdentityRole>(o =>
++    {
++        o.Password.RequireDigit = false;
++        o.Password.RequireUppercase = false;
++        o.Password.RequireNonAlphanumeric = false;
++        o.Password.RequiredLength = 6;
++    })
++    .AddEntityFrameworkStores<AppDbContext>()
++    .AddDefaultTokenProviders();
++
++    builder.Services.ConfigureApplicationCookie(o =>
++    {
++        o.LoginPath = "/login";
++        o.AccessDeniedPath = "/login";
++    });
++
++    builder.Services.AddScoped<IConversationRepository, ConversationRepository>();
+ 
++    // ── IChatClient ──────────────────────────────────────────────────────────
+     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
+ 
+     builder.Services.AddSingleton<IChatClient>(_ =>
+     {
+         if (string.Equals(provider, "AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+         {
+             var endpoint   = builder.Configuration["AI:AzureOpenAI:Endpoint"]
+                 ?? throw new InvalidOperationException("Missing AI:AzureOpenAI:Endpoint");
+             var deployment = builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o";
+             var apiKey     = builder.Configuration["AI:AzureOpenAI:ApiKey"];
+ 
+             var azureClient = string.IsNullOrWhiteSpace(apiKey)
+                 ? new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
+                 : new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new System.ClientModel.ApiKeyCredential(apiKey));
+ 
+             return azureClient.GetChatClient(deployment).AsIChatClient();
+         }
+ 
+-        // Default: Ollama
+         var ollamaEndpoint = builder.Configuration["AI:Ollama:Endpoint"] ?? "http://localhost:11434";
+         var model          = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
+         return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), model);
+     });
+ 
+-    // ── 5. HrAgentService — scoped per Blazor circuit ────────────────────────
+-
+     builder.Services.AddScoped<IHrAgentService>(sp =>
+     {
+         var chatClient = sp.GetRequiredService<IChatClient>();
+         var endpoint   = builder.Configuration["McpServer:Endpoint"] ?? "http://localhost:5200/mcp";
+         var logger     = sp.GetRequiredService<ILogger<HrAgentService>>();
+         return new HrAgentService(chatClient, endpoint, logger);
+     });
+ 
+-    // ── 6. DbContext — TEMP registration for EF migration scaffolding (replaced by Task 6) ──
+-
+-    // TEMP: DbContext registration for EF migration scaffolding — replaced by Task 6
+-    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
+-        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
+-    builder.Services.AddDbContext<HrDashboard.Infrastructure.AppDbContext>(o =>
+-        o.UseSqlServer(connStr));
+-
+-    // ── 7. Blazor + MudBlazor ─────────────────────────────────────────────────
++    // ChatSessionService registered in Task 13
++    // builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
+ 
++    // ── Blazor + MudBlazor ───────────────────────────────────────────────────
+     builder.Services.AddRazorComponents()
+         .AddInteractiveServerComponents();
+     builder.Services.AddMudServices();
++    builder.Services.AddCascadingAuthenticationState();
+ 
+     var app = builder.Build();
+ 
++    // ── Auto-migrate on startup ───────────────────────────────────────────────
++    using (var scope = app.Services.CreateScope())
++    {
++        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
++        await db.Database.MigrateAsync();
++    }
++
+     if (!app.Environment.IsDevelopment())
+     {
+         app.UseExceptionHandler("/Error");
+         app.UseHsts();
+     }
+ 
+     app.UseHttpsRedirection();
+     app.UseStaticFiles();
++    app.UseAuthentication();
++    app.UseAuthorization();
+     app.UseAntiforgery();
++
++    // ── Logout endpoint ──────────────────────────────────────────────────────
++    app.MapGet("/account/logout", async (SignInManager<AppUser> signInManager) =>
++    {
++        await signInManager.SignOutAsync();
++        return Results.LocalRedirect("/login");
++    });
++
+     app.MapRazorComponents<HrDashboard.Web.Components.App>()
+         .AddInteractiveServerRenderMode()
+         .WithStaticAssets();
+ 
+     await app.RunAsync();
+ }
+ catch (Exception ex) when (ex is not OperationCanceledException)
+ {
+     Log.Fatal(ex, "HrDashboard.Web terminated unexpectedly");
+     Environment.ExitCode = 1;
+diff --git a/src/HrDashboard.Web/Services/_Placeholder.cs b/src/HrDashboard.Web/Services/_Placeholder.cs
+new file mode 100644
+index 0000000..b2aa7c8
+--- /dev/null
++++ b/src/HrDashboard.Web/Services/_Placeholder.cs
+@@ -0,0 +1,9 @@
++namespace HrDashboard.Web.Services;
++
++/// <summary>
++/// Placeholder to enable namespace during Task 6.
++/// Actual services will be added in Task 13.
++/// </summary>
++public class _Placeholder
++{
++}

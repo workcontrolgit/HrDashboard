@@ -1,15 +1,73 @@
 @inherits LayoutComponentBase
+@inject NavigationManager Nav
 
 <MudThemeProvider />
 <MudPopoverProvider />
 <MudDialogProvider />
 <MudSnackbarProvider />
 
-<MudLayout>
-    <MudAppBar Elevation="1" Color="Color.Primary">
-        <MudText Typo="Typo.h6">HR Analytics Portal</MudText>
-    </MudAppBar>
-    <MudMainContent Class="pt-4">
+<div class="hr-shell">
+
+    <!-- Left panel -->
+    <div class="hr-left @(_leftOpen ? "" : "collapsed")">
+        <div style="display:flex;align-items:center;padding:8px 8px 0 8px;gap:4px">
+            <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                           Size="Size.Small"
+                           OnClick="() => _leftOpen = !_leftOpen"
+                           title="Toggle sidebar" />
+            <MudIconButton Icon="@Icons.Material.Filled.Add"
+                           Size="Size.Small"
+                           Color="Color.Primary"
+                           OnClick="NewChat"
+                           title="New conversation" />
+        </div>
+        <ConversationList OnNewChat="NewChat" />
+    </div>
+
+    <!-- Center panel -->
+    <div class="hr-center">
+        <div style="display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid rgba(0,0,0,0.12);gap:8px">
+            @if (!_leftOpen)
+            {
+                <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                               Size="Size.Small"
+                               OnClick="() => _leftOpen = true"
+                               title="Open sidebar" />
+            }
+            <MudText Typo="Typo.subtitle1" Style="flex:1">HR Analytics Portal</MudText>
+            @if (!_rightOpen)
+            {
+                <MudIconButton Icon="@Icons.Material.Filled.BarChart"
+                               Size="Size.Small"
+                               OnClick="() => _rightOpen = true"
+                               title="Show results panel" />
+            }
+        </div>
         @Body
-    </MudMainContent>
-</MudLayout>
+    </div>
+
+    <!-- Right panel -->
+    <div class="hr-right @(_rightOpen ? "" : "collapsed")">
+        <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid rgba(0,0,0,0.12)">
+            <MudText Typo="Typo.subtitle2" Style="flex:1">Results</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight"
+                           Size="Size.Small"
+                           OnClick="() => _rightOpen = false"
+                           title="Hide results panel" />
+        </div>
+        <div class="hr-right-content">
+            <ResultsPanel />
+        </div>
+    </div>
+
+</div>
+
+@code {
+    private bool _leftOpen = true;
+    private bool _rightOpen = true;
+
+    private void NewChat()
+    {
+        Nav.NavigateTo("/", forceLoad: false);
+    }
+}

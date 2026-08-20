@@ -115,6 +115,89 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         return ("[Agent reached iteration limit — rephrase your query]", []);
     }
 
+    private List<ChatMessage> BuildMessages(
+        IEnumerable<(MessageRole Role, string Content)> history,
+        string prompt)
+    {
+        var messages = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
+        foreach (var (role, content) in history)
+        {
+            var chatRole = role == MessageRole.User ? ChatRole.User : ChatRole.Assistant;
+            messages.Add(new ChatMessage(chatRole, content));
+        }
+        messages.Add(new ChatMessage(ChatRole.User, prompt));
+        return messages;
+    }
+
+    public async IAsyncEnumerable<string> AskStreamAsync(
+        IEnumerable<(MessageRole Role, string Content)> history,
+        string prompt,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await EnsureInitializedAsync(ct);
+
+        _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
+
+        var toolOptions = new ChatOptions { Tools = [.. _tools] };
+        var messages = BuildMessages(history, prompt);
+        bool toolsWereUsed = false;
+
+        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data.
+        // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
+        for (int i = 0; i < MaxIterations; i++)
+        {
+            var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
+
+            var calls = response.Messages
+                .SelectMany(m => m.Contents)
+                .OfType<FunctionCallContent>()
+                .ToList();
+
+            if (calls.Count == 0)
+            {
+                if (!toolsWereUsed)
+                {
+                    // Model answered without any tool calls — yield text directly (no extra API call)
+                    _logger.LogInformation("Agent streaming (no tools) completed in 1 round");
+                    yield return response.Text ?? string.Empty;
+                    yield break;
+                }
+
+                // Tool data is in messages; fall through to Phase 2 for streaming final answer
+                _logger.LogInformation("Agent tool-use loop done after {Rounds} round(s), streaming final answer", i);
+                break;
+            }
+
+            toolsWereUsed = true;
+
+            if (i == MaxIterations - 1)
+            {
+                _logger.LogWarning("Agent streaming hit iteration limit for prompt: {Prompt}", prompt);
+                yield return "[Agent reached iteration limit — rephrase your query]";
+                yield break;
+            }
+
+            // Add tool-call messages and results; final answer is never added here
+            foreach (var msg in response.Messages)
+                messages.Add(msg);
+
+            foreach (var call in calls)
+            {
+                _logger.LogDebug("Tool call: {Tool}", call.Name);
+                var result = await InvokeToolAsync(call, ct);
+                messages.Add(new ChatMessage(ChatRole.Tool,
+                    [new FunctionResultContent(call.CallId, result)]));
+            }
+        }
+
+        // Phase 2: stream the final summarization over the accumulated tool context
+        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+                yield return update.Text;
+        }
+    }
+
     private async Task<object?> InvokeToolAsync(FunctionCallContent call, CancellationToken ct)
     {
         var fn = _tools.OfType<AIFunction>()

@@ -1,0 +1,53 @@
+diff --git a/src/HrDashboard.Agents/IConversationRepository.cs b/src/HrDashboard.Agents/IConversationRepository.cs
+new file mode 100644
+index 0000000..32a88fe
+--- /dev/null
++++ b/src/HrDashboard.Agents/IConversationRepository.cs
+@@ -0,0 +1,34 @@
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Agents;
++
++public interface IConversationRepository
++{
++    Task<List<ConversationSummary>> GetByUserAsync(string userId, CancellationToken ct = default);
++    Task<ConversationSummary> CreateAsync(string userId, string title, CancellationToken ct = default);
++    Task UpdateTitleAsync(Guid conversationId, string title, CancellationToken ct = default);
++
++    /// <summary>Returns (Role, Content) only — no MetricsJson. Used for agent context.</summary>
++    Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
++        Guid conversationId, CancellationToken ct = default);
++
++    /// <summary>Returns full message rows including MetricsJson. Used for display.</summary>
++    Task<List<MessageDisplay>> GetMessagesForDisplayAsync(
++        Guid conversationId, CancellationToken ct = default);
++
++    Task<MessageDisplay> AddMessageAsync(
++        Guid conversationId,
++        MessageRole role,
++        string content,
++        string? metricsJson = null,
++        CancellationToken ct = default);
++}
++
++public record ConversationSummary(Guid Id, string Title, DateTime CreatedAt);
++
++public record MessageDisplay(
++    Guid Id,
++    MessageRole Role,
++    string Content,
++    string? MetricsJson,
++    DateTime CreatedAt);
+diff --git a/src/HrDashboard.Agents/Models/MessageRole.cs b/src/HrDashboard.Agents/Models/MessageRole.cs
+new file mode 100644
+index 0000000..b6973a3
+--- /dev/null
++++ b/src/HrDashboard.Agents/Models/MessageRole.cs
+@@ -0,0 +1,7 @@
++namespace HrDashboard.Agents.Models;
++
++public enum MessageRole
++{
++    User,
++    Assistant
++}

@@ -11,7 +11,7 @@ var tempConfig = new ConfigurationBuilder()
     .AddEnvironmentVariables()
     .Build();
 
-var logBase = Path.Combine(AppContext.BaseDirectory, "logs");
+var logBase = Path.Combine(SolutionRoot(), "logs", "mcpserver");
 
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(tempConfig)
@@ -73,6 +73,14 @@ catch (Exception ex)
 finally
 {
     await Log.CloseAndFlushAsync();
+}
+
+static string SolutionRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !dir.GetFiles("*.slnx").Any() && !dir.GetFiles("*.sln").Any())
+        dir = dir.Parent;
+    return dir?.FullName ?? AppContext.BaseDirectory;
 }
 
 static void ConfigureServices(IServiceCollection services, IConfiguration config)

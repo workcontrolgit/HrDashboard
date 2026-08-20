@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/HrDashboard.Agents/HrDashboard.Agents.csproj" />
+    <Project Path="src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj" />
     <Project Path="src/HrDashboard.McpServer/HrDashboard.McpServer.csproj" />
     <Project Path="src/HrDashboard.Web/HrDashboard.Web.csproj" />
   </Folder>
