@@ -9,8 +9,20 @@ using MudBlazor.Services;
 using OllamaSharp;
 using Serilog;
 
+var logBase = Path.Combine(SolutionRoot(), "logs", "web");
+
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(logBase, "info", "info-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information)
+    .WriteTo.File(
+        Path.Combine(logBase, "error", "error-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error)
     .CreateBootstrapLogger();
 
 try
@@ -35,7 +47,18 @@ try
         }
     }
 
-    builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+    builder.Host.UseSerilog((ctx, cfg) => cfg
+        .ReadFrom.Configuration(ctx.Configuration)
+        .WriteTo.File(
+            Path.Combine(logBase, "info", "info-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 7,
+            restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information)
+        .WriteTo.File(
+            Path.Combine(logBase, "error", "error-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 30,
+            restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error));
 
     // ── SQL Server + Identity ────────────────────────────────────────────────
     var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
@@ -143,4 +166,12 @@ catch (Exception ex) when (ex is not OperationCanceledException)
 finally
 {
     await Log.CloseAndFlushAsync();
+}
+
+static string SolutionRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !dir.GetFiles("*.slnx").Any() && !dir.GetFiles("*.sln").Any())
+        dir = dir.Parent;
+    return dir?.FullName ?? AppContext.BaseDirectory;
 }
