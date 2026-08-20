@@ -7,7 +7,7 @@ namespace HrDashboard.McpServer;
 /// Singleton warm bridge to Oracle SQLcl MCP subprocess.
 /// Started once at host startup; keeps the sql -mcp process alive.
 /// </summary>
-public sealed class OracleBridge : IHostedService, IAsyncDisposable
+public sealed class OracleBridge : IHostedService, IAsyncDisposable, IOracleBridge
 {
     private readonly string _sqlclPath;
     private readonly string _connectionName;

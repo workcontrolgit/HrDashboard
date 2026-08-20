@@ -5,4 +5,7 @@
     <Project Path="src/HrDashboard.McpServer/HrDashboard.McpServer.csproj" />
     <Project Path="src/HrDashboard.Web/HrDashboard.Web.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HrDashboard.McpServer.Tests/HrDashboard.McpServer.Tests.csproj" />
+  </Folder>
 </Solution>
