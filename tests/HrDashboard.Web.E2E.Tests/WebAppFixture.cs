@@ -13,20 +13,28 @@ namespace HrDashboard.Web.E2E.Tests;
 [SetUpFixture]
 public class WebAppFixture
 {
+    // NOTE: This run passes --urls http://localhost:5100 only, so Program.cs's
+    // UseHttpsRedirection() is a no-op here (no HTTPS URL is configured to redirect to).
+    // If that configuration ever changes to include an https:// URL, E2E navigation would
+    // start getting redirected to https and fail on certificate trust.
     public const string BaseUrl = "http://localhost:5100";
 
-    private static Process? _process;
+    private Process? _process;
 
     [OneTimeSetUp]
     public async Task StartWebAppAsync()
     {
+        await EnsurePortFreeAsync();
+
         var repoRoot = FindRepoRoot();
         var webProjectPath = Path.Combine(repoRoot, "src", "HrDashboard.Web", "HrDashboard.Web.csproj");
+
+        RunDotnetBuildOrThrow(webProjectPath, repoRoot);
 
         var startInfo = new ProcessStartInfo
         {
             FileName = "dotnet",
-            Arguments = $"run --project \"{webProjectPath}\" --no-launch-profile --urls {BaseUrl}",
+            Arguments = $"run --no-build --project \"{webProjectPath}\" --no-launch-profile --urls {BaseUrl}",
             WorkingDirectory = repoRoot,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -42,18 +50,33 @@ public class WebAppFixture
         _process.BeginOutputReadLine();
         _process.BeginErrorReadLine();
 
-        await WaitUntilReadyAsync();
+        try
+        {
+            await WaitUntilReadyAsync();
+        }
+        catch
+        {
+            // NUnit does not reliably run [OneTimeTearDown] after a failed [OneTimeSetUp],
+            // so clean up the subprocess here before rethrowing the original failure.
+            KillProcess();
+            throw;
+        }
     }
 
     [OneTimeTearDown]
-    public void StopWebApp()
+    public void StopWebApp() => KillProcess();
+
+    private void KillProcess()
     {
         if (_process is null) return;
 
         try
         {
             if (!_process.HasExited)
+            {
                 _process.Kill(entireProcessTree: true);
+                _process.WaitForExit(5000);
+            }
         }
         finally
         {
@@ -62,7 +85,47 @@ public class WebAppFixture
         }
     }
 
-    private static async Task WaitUntilReadyAsync()
+    private static async Task EnsurePortFreeAsync()
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+
+        try
+        {
+            await client.GetAsync(BaseUrl);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+        {
+            // Nothing responded — the port is free. Keep going.
+            return;
+        }
+
+        // Something responded (even an error response) — the point is *something* is
+        // already bound to this port, so starting our own process risks the readiness
+        // probe passing against a foreign server instead of ours.
+        throw new InvalidOperationException(
+            $"Port 5100 is already in use — something is listening at {BaseUrl}. " +
+            "Stop whatever is using that port before running the E2E suite.");
+    }
+
+    private static void RunDotnetBuildOrThrow(string webProjectPath, string repoRoot)
+    {
+        using var buildProcess = Process.Start(new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            Arguments = $"build \"{webProjectPath}\"",
+            WorkingDirectory = repoRoot,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        }) ?? throw new InvalidOperationException("Failed to start 'dotnet build' for HrDashboard.Web.");
+
+        buildProcess.WaitForExit();
+
+        if (buildProcess.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"'dotnet build' for HrDashboard.Web failed with exit code {buildProcess.ExitCode}.");
+    }
+
+    private async Task WaitUntilReadyAsync()
     {
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         var deadline = DateTime.UtcNow.AddSeconds(60);
@@ -83,6 +146,12 @@ public class WebAppFixture
             catch (HttpRequestException)
             {
                 // Server not accepting connections yet — keep polling.
+            }
+            catch (OperationCanceledException)
+            {
+                // A single GET attempt timed out (HttpClient.Timeout throws
+                // TaskCanceledException, which derives from OperationCanceledException) —
+                // keep polling instead of aborting the whole loop.
             }
 
             await Task.Delay(500);

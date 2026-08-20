@@ -40,7 +40,7 @@ Each test creates its own user through the UI with a unique email — no direct 
 
 | Test | Steps | Assertion |
 |---|---|---|
-| `Register_NewUser_Succeeds` | Navigate to `/register`; fill email (`e2e-<guid>@test.local`), password, confirm password; submit | Navigation leaves `/register` (no `?error=` query param) |
+| `Register_NewUser_Succeeds` | Navigate to `/register`; fill email (`e2e-<guid>@test.local`), password, confirm password; submit | Redirected to `/` (registering signs the user in immediately and redirects to the dashboard root) |
 | `Login_ValidCredentials_ReachesDashboard` | Register a fresh user; navigate to `/login`; fill same email/password; submit | Redirected to `/` (`Dashboard.razor`, the `[Authorize]`-protected root route) |
 | `Login_InvalidCredentials_ShowsError` | Navigate to `/login`; fill a non-existent email and any password; submit | Page shows the "Invalid email or password." `MudAlert` |
 | `Logout_SignedInUser_ReturnsToLogin` | Register + log in a fresh user; trigger logout | Redirected back to `/login` |
@@ -64,7 +64,7 @@ tests/HrDashboard.Web.E2E.Tests/
 
 ## Tech Stack
 
-- **NUnit 3.\*** / **NUnit3TestAdapter** — test runner (this project only)
+- **NUnit 4.\*** / **NUnit3TestAdapter** — test runner (this project only)
 - **Microsoft.Playwright.NUnit** — browser automation + `PageTest` base class
 - **FluentAssertions 6.\*** — kept for assertion-style consistency with the rest of the solution
 - Browser binaries installed once via `pwsh bin/Debug/net10.0/playwright.ps1 install chromium` after first build — no npm/Node.js involved
