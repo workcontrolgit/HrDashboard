@@ -14,12 +14,12 @@
             <MudIconButton Icon="@Icons.Material.Filled.Menu"
                            Size="Size.Small"
                            OnClick="() => _leftOpen = !_leftOpen"
-                           Title="Toggle sidebar" />
+                           title="Toggle sidebar" />
             <MudIconButton Icon="@Icons.Material.Filled.Add"
                            Size="Size.Small"
                            Color="Color.Primary"
                            OnClick="NewChat"
-                           Title="New conversation" />
+                           title="New conversation" />
         </div>
         <ConversationList OnNewChat="NewChat" />
     </div>
@@ -32,7 +32,7 @@
                 <MudIconButton Icon="@Icons.Material.Filled.Menu"
                                Size="Size.Small"
                                OnClick="() => _leftOpen = true"
-                               Title="Open sidebar" />
+                               title="Open sidebar" />
             }
             <MudText Typo="Typo.subtitle1" Style="flex:1">HR Analytics Portal</MudText>
             @if (!_rightOpen)
@@ -40,7 +40,7 @@
                 <MudIconButton Icon="@Icons.Material.Filled.BarChart"
                                Size="Size.Small"
                                OnClick="() => _rightOpen = true"
-                               Title="Show results panel" />
+                               title="Show results panel" />
             }
         </div>
         @Body
@@ -53,7 +53,7 @@
             <MudIconButton Icon="@Icons.Material.Filled.ChevronRight"
                            Size="Size.Small"
                            OnClick="() => _rightOpen = false"
-                           Title="Hide results panel" />
+                           title="Hide results panel" />
         </div>
         <div class="hr-right-content">
             <ResultsPanel />
