@@ -5,11 +5,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace HrDashboard.Infrastructure.Repositories;
 
-public class ConversationRepository(AppDbContext db) : IConversationRepository
+public class ConversationRepository(IDbContextFactory<AppDbContext> dbFactory) : IConversationRepository
 {
     public async Task<List<ConversationSummary>> GetByUserAsync(
         string userId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.Conversations
             .Where(c => c.UserId == userId)
             .OrderByDescending(c => c.CreatedAt)
@@ -20,6 +21,7 @@ public class ConversationRepository(AppDbContext db) : IConversationRepository
     public async Task<ConversationSummary> CreateAsync(
         string userId, string title, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         var conv = new Conversation { UserId = userId, Title = title };
         db.Conversations.Add(conv);
         await db.SaveChangesAsync(ct);
@@ -29,6 +31,7 @@ public class ConversationRepository(AppDbContext db) : IConversationRepository
     public async Task UpdateTitleAsync(
         Guid conversationId, string title, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         await db.Conversations
             .Where(c => c.Id == conversationId)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Title, title), ct);
@@ -37,6 +40,7 @@ public class ConversationRepository(AppDbContext db) : IConversationRepository
     public async Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
         Guid conversationId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.Messages
             .Where(m => m.ConversationId == conversationId)
             .OrderBy(m => m.CreatedAt)
@@ -47,6 +51,7 @@ public class ConversationRepository(AppDbContext db) : IConversationRepository
     public async Task<List<MessageDisplay>> GetMessagesForDisplayAsync(
         Guid conversationId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.Messages
             .Where(m => m.ConversationId == conversationId)
             .OrderBy(m => m.CreatedAt)
@@ -61,6 +66,7 @@ public class ConversationRepository(AppDbContext db) : IConversationRepository
         string? metricsJson = null,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
         var msg = new Message
         {
             ConversationId = conversationId,

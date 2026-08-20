@@ -50,6 +50,7 @@ try
 
     builder.Host.UseSerilog((ctx, cfg) => cfg
         .ReadFrom.Configuration(ctx.Configuration)
+        .WriteTo.Console()
         .WriteTo.File(
             Path.Combine(logBase, "info", "info-.log"),
             rollingInterval: RollingInterval.Day,
@@ -65,7 +66,7 @@ try
     var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
 
-    builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connStr));
+    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connStr));
 
     builder.Services.AddIdentity<AppUser, IdentityRole>(o =>
     {
@@ -128,9 +129,10 @@ try
     var app = builder.Build();
 
     // ── Auto-migrate on startup ───────────────────────────────────────────────
-    using (var scope = app.Services.CreateScope())
+    await using (var db = await app.Services
+        .GetRequiredService<IDbContextFactory<AppDbContext>>()
+        .CreateDbContextAsync())
     {
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         await db.Database.MigrateAsync();
     }
 
