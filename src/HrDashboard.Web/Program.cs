@@ -1,29 +1,37 @@
 using Azure.Identity;
+using Microsoft.AspNetCore.Mvc;
 using HrDashboard.Agents;
+using HrDashboard.Infrastructure;
+using HrDashboard.Infrastructure.Repositories;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using MudBlazor.Services;
 using OllamaSharp;
 using Serilog;
 
-// ── 1. Bootstrap Serilog ─────────────────────────────────────────────────────
+var logBase = Path.Combine(SolutionRoot(), "logs", "web");
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(logBase, "info", "info-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information)
+    .WriteTo.File(
+        Path.Combine(logBase, "error", "error-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error)
     .CreateBootstrapLogger();
 
 try
 {
     var builder = WebApplication.CreateBuilder(args);
 
-    // ── 2. User secrets (always — so local dev works in Production mode) ────
-
     builder.Configuration.AddUserSecrets<Program>(optional: true);
-
-    // ── 3. Static web assets (NuGet _content/ e.g. MudBlazor) ───────────────
-
     builder.WebHost.UseStaticWebAssets();
-
-    // ── 3. Azure Key Vault in Production ─────────────────────────────────────
 
     if (builder.Environment.IsProduction())
     {
@@ -31,22 +39,54 @@ try
         if (!string.IsNullOrWhiteSpace(vaultUri))
         {
             builder.Configuration.AddAzureKeyVault(
-                new Uri(vaultUri),
-                new DefaultAzureCredential());
-            Log.Information("Azure Key Vault configuration loaded from {Uri}", vaultUri);
+                new Uri(vaultUri), new DefaultAzureCredential());
+            Log.Information("Azure Key Vault loaded from {Uri}", vaultUri);
         }
         else
         {
-            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault in Production");
+            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault");
         }
     }
 
-    // ── 3. Serilog from appsettings ───────────────────────────────────────────
+    builder.Host.UseSerilog((ctx, cfg) => cfg
+        .ReadFrom.Configuration(ctx.Configuration)
+        .WriteTo.Console()
+        .WriteTo.File(
+            Path.Combine(logBase, "info", "info-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 7,
+            restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Information)
+        .WriteTo.File(
+            Path.Combine(logBase, "error", "error-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 30,
+            restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Error));
 
-    builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+    // ── SQL Server + Identity ────────────────────────────────────────────────
+    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
 
-    // ── 4. IChatClient — Ollama (Dev) / Azure OpenAI (Prod) ──────────────────
+    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseSqlServer(connStr));
 
+    builder.Services.AddIdentity<AppUser, IdentityRole>(o =>
+    {
+        o.Password.RequireDigit = false;
+        o.Password.RequireUppercase = false;
+        o.Password.RequireNonAlphanumeric = false;
+        o.Password.RequiredLength = 6;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddDefaultTokenProviders();
+
+    builder.Services.ConfigureApplicationCookie(o =>
+    {
+        o.LoginPath = "/login";
+        o.AccessDeniedPath = "/login";
+    });
+
+    builder.Services.AddScoped<IConversationRepository, ConversationRepository>();
+
+    // ── IChatClient ──────────────────────────────────────────────────────────
     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
 
     builder.Services.AddSingleton<IChatClient>(_ =>
@@ -65,13 +105,10 @@ try
             return azureClient.GetChatClient(deployment).AsIChatClient();
         }
 
-        // Default: Ollama
         var ollamaEndpoint = builder.Configuration["AI:Ollama:Endpoint"] ?? "http://localhost:11434";
         var model          = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
         return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), model);
     });
-
-    // ── 5. HrAgentService — scoped per Blazor circuit ────────────────────────
 
     builder.Services.AddScoped<IHrAgentService>(sp =>
     {
@@ -81,13 +118,23 @@ try
         return new HrAgentService(chatClient, endpoint, logger);
     });
 
-    // ── 6. Blazor + MudBlazor ─────────────────────────────────────────────────
+    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
 
+    // ── Blazor + MudBlazor ───────────────────────────────────────────────────
     builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
     builder.Services.AddMudServices();
+    builder.Services.AddCascadingAuthenticationState();
 
     var app = builder.Build();
+
+    // ── Auto-migrate on startup ───────────────────────────────────────────────
+    await using (var db = await app.Services
+        .GetRequiredService<IDbContextFactory<AppDbContext>>()
+        .CreateDbContextAsync())
+    {
+        await db.Database.MigrateAsync();
+    }
 
     if (!app.Environment.IsDevelopment())
     {
@@ -97,7 +144,53 @@ try
 
     app.UseHttpsRedirection();
     app.UseStaticFiles();
+    app.UseAuthentication();
+    app.UseAuthorization();
     app.UseAntiforgery();
+
+    // ── Auth endpoints (run in real HTTP context — SignalR circuit cannot write cookies) ──
+    app.MapPost("/account/login-action", async (
+        [FromForm] string email,
+        [FromForm] string password,
+        SignInManager<AppUser> signInManager) =>
+    {
+        var result = await signInManager.PasswordSignInAsync(
+            email, password, isPersistent: true, lockoutOnFailure: false);
+        return result.Succeeded
+            ? Results.LocalRedirect("/")
+            : Results.LocalRedirect($"/login?error=invalid&email={Uri.EscapeDataString(email)}");
+    });
+
+    app.MapPost("/account/register-action", async (
+        [FromForm] string email,
+        [FromForm] string password,
+        [FromForm] string confirm,
+        UserManager<AppUser> userManager,
+        SignInManager<AppUser> signInManager) =>
+    {
+        if (password != confirm)
+            return Results.LocalRedirect(
+                $"/register?error={Uri.EscapeDataString("Passwords do not match.")}&email={Uri.EscapeDataString(email)}");
+
+        var user = new AppUser { UserName = email, Email = email };
+        var result = await userManager.CreateAsync(user, password);
+        if (result.Succeeded)
+        {
+            await signInManager.SignInAsync(user, isPersistent: true);
+            return Results.LocalRedirect("/");
+        }
+
+        var errors = string.Join(" ", result.Errors.Select(e => e.Description));
+        return Results.LocalRedirect(
+            $"/register?error={Uri.EscapeDataString(errors)}&email={Uri.EscapeDataString(email)}");
+    });
+
+    app.MapPost("/account/logout", async (SignInManager<AppUser> signInManager) =>
+    {
+        await signInManager.SignOutAsync();
+        return Results.LocalRedirect("/login");
+    }).RequireAuthorization();
+
     app.MapRazorComponents<HrDashboard.Web.Components.App>()
         .AddInteractiveServerRenderMode()
         .WithStaticAssets();
@@ -112,4 +205,12 @@ catch (Exception ex) when (ex is not OperationCanceledException)
 finally
 {
     await Log.CloseAndFlushAsync();
+}
+
+static string SolutionRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null && !dir.GetFiles("*.slnx").Any() && !dir.GetFiles("*.sln").Any())
+        dir = dir.Parent;
+    return dir?.FullName ?? AppContext.BaseDirectory;
 }

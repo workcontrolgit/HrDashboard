@@ -1,0 +1,2718 @@
+diff --git a/HrDashboard.slnx b/HrDashboard.slnx
+index 1cbc0d5..bab5abb 100644
+--- a/HrDashboard.slnx
++++ b/HrDashboard.slnx
+@@ -1,7 +1,8 @@
+ <Solution>
+   <Folder Name="/src/">
+     <Project Path="src/HrDashboard.Agents/HrDashboard.Agents.csproj" />
++    <Project Path="src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj" />
+     <Project Path="src/HrDashboard.McpServer/HrDashboard.McpServer.csproj" />
+     <Project Path="src/HrDashboard.Web/HrDashboard.Web.csproj" />
+   </Folder>
+ </Solution>
+diff --git a/src/HrDashboard.Agents/HrAgentService.cs b/src/HrDashboard.Agents/HrAgentService.cs
+index 17c1bf1..7aafe2e 100644
+--- a/src/HrDashboard.Agents/HrAgentService.cs
++++ b/src/HrDashboard.Agents/HrAgentService.cs
+@@ -108,20 +108,90 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
+ 
+                 messages.Add(new ChatMessage(ChatRole.Tool,
+                     [new FunctionResultContent(call.CallId, result)]));
+             }
+         }
+ 
+         _logger.LogWarning("Agent hit iteration limit for prompt: {Prompt}", prompt);
+         return ("[Agent reached iteration limit — rephrase your query]", []);
+     }
+ 
++    private List<ChatMessage> BuildMessages(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt)
++    {
++        var messages = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
++        foreach (var (role, content) in history)
++        {
++            var chatRole = role == MessageRole.User ? ChatRole.User : ChatRole.Assistant;
++            messages.Add(new ChatMessage(chatRole, content));
++        }
++        messages.Add(new ChatMessage(ChatRole.User, prompt));
++        return messages;
++    }
++
++    public async IAsyncEnumerable<string> AskStreamAsync(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt,
++        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
++    {
++        await EnsureInitializedAsync(ct);
++
++        _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
++
++        var toolOptions = new ChatOptions { Tools = [.. _tools] };
++        var messages = BuildMessages(history, prompt);
++
++        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data
++        for (int i = 0; i < MaxIterations; i++)
++        {
++            var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
++            foreach (var msg in response.Messages)
++                messages.Add(msg);
++
++            var calls = response.Messages
++                .SelectMany(m => m.Contents)
++                .OfType<FunctionCallContent>()
++                .ToList();
++
++            if (calls.Count == 0)
++            {
++                // Model answered without tool calls — yield full text as single chunk
++                _logger.LogInformation("Agent streaming completed in {Iterations} iteration(s)", i + 1);
++                yield return response.Text ?? string.Empty;
++                yield break;
++            }
++
++            if (i == MaxIterations - 1)
++            {
++                _logger.LogWarning("Agent streaming hit iteration limit for prompt: {Prompt}", prompt);
++                yield return "[Agent reached iteration limit — rephrase your query]";
++                yield break;
++            }
++
++            foreach (var call in calls)
++            {
++                _logger.LogDebug("Tool call: {Tool}", call.Name);
++                var result = await InvokeToolAsync(call, ct);
++                messages.Add(new ChatMessage(ChatRole.Tool,
++                    [new FunctionResultContent(call.CallId, result)]));
++            }
++        }
++
++        // Phase 2: tool data gathered — stream the final summarization
++        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
++        {
++            if (!string.IsNullOrEmpty(update.Text))
++                yield return update.Text;
++        }
++    }
++
+     private async Task<object?> InvokeToolAsync(FunctionCallContent call, CancellationToken ct)
+     {
+         var fn = _tools.OfType<AIFunction>()
+             .FirstOrDefault(t => string.Equals(t.Name, call.Name, StringComparison.OrdinalIgnoreCase));
+ 
+         if (fn is null)
+         {
+             _logger.LogWarning("Tool not found: {Name}", call.Name);
+             return $"[Tool '{call.Name}' not found]";
+         }
+diff --git a/src/HrDashboard.Agents/IConversationRepository.cs b/src/HrDashboard.Agents/IConversationRepository.cs
+new file mode 100644
+index 0000000..32a88fe
+--- /dev/null
++++ b/src/HrDashboard.Agents/IConversationRepository.cs
+@@ -0,0 +1,34 @@
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Agents;
++
++public interface IConversationRepository
++{
++    Task<List<ConversationSummary>> GetByUserAsync(string userId, CancellationToken ct = default);
++    Task<ConversationSummary> CreateAsync(string userId, string title, CancellationToken ct = default);
++    Task UpdateTitleAsync(Guid conversationId, string title, CancellationToken ct = default);
++
++    /// <summary>Returns (Role, Content) only — no MetricsJson. Used for agent context.</summary>
++    Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
++        Guid conversationId, CancellationToken ct = default);
++
++    /// <summary>Returns full message rows including MetricsJson. Used for display.</summary>
++    Task<List<MessageDisplay>> GetMessagesForDisplayAsync(
++        Guid conversationId, CancellationToken ct = default);
++
++    Task<MessageDisplay> AddMessageAsync(
++        Guid conversationId,
++        MessageRole role,
++        string content,
++        string? metricsJson = null,
++        CancellationToken ct = default);
++}
++
++public record ConversationSummary(Guid Id, string Title, DateTime CreatedAt);
++
++public record MessageDisplay(
++    Guid Id,
++    MessageRole Role,
++    string Content,
++    string? MetricsJson,
++    DateTime CreatedAt);
+diff --git a/src/HrDashboard.Agents/IHrAgentService.cs b/src/HrDashboard.Agents/IHrAgentService.cs
+index 9d70133..f651609 100644
+--- a/src/HrDashboard.Agents/IHrAgentService.cs
++++ b/src/HrDashboard.Agents/IHrAgentService.cs
+@@ -3,11 +3,21 @@ using HrDashboard.Agents.Models;
+ namespace HrDashboard.Agents;
+ 
+ public interface IHrAgentService
+ {
+     /// <summary>
+     /// Submits a natural language HR analytics query and returns structured metric rows.
+     /// </summary>
+     Task<(string RawText, IReadOnlyList<HrMetricRow> Metrics)> AskAsync(
+         string prompt,
+         CancellationToken ct = default);
++
++    /// <summary>
++    /// Streams the AI response chunk by chunk. Runs the tool-use loop internally
++    /// (non-streaming), then yields the final text as it arrives.
++    /// history = prior (Role, Content) pairs for context — MetricsJson is never included.
++    /// </summary>
++    IAsyncEnumerable<string> AskStreamAsync(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt,
++        CancellationToken ct = default);
+ }
+diff --git a/src/HrDashboard.Agents/Models/MessageRole.cs b/src/HrDashboard.Agents/Models/MessageRole.cs
+new file mode 100644
+index 0000000..b6973a3
+--- /dev/null
++++ b/src/HrDashboard.Agents/Models/MessageRole.cs
+@@ -0,0 +1,7 @@
++namespace HrDashboard.Agents.Models;
++
++public enum MessageRole
++{
++    User,
++    Assistant
++}
+diff --git a/src/HrDashboard.Infrastructure/AppDbContext.cs b/src/HrDashboard.Infrastructure/AppDbContext.cs
+new file mode 100644
+index 0000000..b31664b
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/AppDbContext.cs
+@@ -0,0 +1,36 @@
++using HrDashboard.Infrastructure.Entities;
++using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore;
++
++namespace HrDashboard.Infrastructure;
++
++public class AppDbContext(DbContextOptions<AppDbContext> options)
++    : IdentityDbContext<AppUser>(options)
++{
++    public DbSet<Conversation> Conversations => Set<Conversation>();
++    public DbSet<Message> Messages => Set<Message>();
++
++    protected override void OnModelCreating(ModelBuilder builder)
++    {
++        base.OnModelCreating(builder);
++
++        builder.Entity<Conversation>(e =>
++        {
++            e.HasKey(c => c.Id);
++            e.Property(c => c.UserId).HasMaxLength(450).IsRequired();
++            e.Property(c => c.Title).HasMaxLength(512);
++            e.HasMany(c => c.Messages)
++             .WithOne(m => m.Conversation)
++             .HasForeignKey(m => m.ConversationId)
++             .OnDelete(DeleteBehavior.Cascade);
++            e.HasIndex(c => c.UserId);
++        });
++
++        builder.Entity<Message>(e =>
++        {
++            e.HasKey(m => m.Id);
++            e.Property(m => m.Content).IsRequired();
++            e.Property(m => m.Role).HasConversion<string>();
++        });
++    }
++}
+diff --git a/src/HrDashboard.Infrastructure/AppUser.cs b/src/HrDashboard.Infrastructure/AppUser.cs
+new file mode 100644
+index 0000000..89454e9
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/AppUser.cs
+@@ -0,0 +1,5 @@
++using Microsoft.AspNetCore.Identity;
++
++namespace HrDashboard.Infrastructure;
++
++public class AppUser : IdentityUser { }
+diff --git a/src/HrDashboard.Infrastructure/Entities/Conversation.cs b/src/HrDashboard.Infrastructure/Entities/Conversation.cs
+new file mode 100644
+index 0000000..22a6fac
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Entities/Conversation.cs
+@@ -0,0 +1,10 @@
++namespace HrDashboard.Infrastructure.Entities;
++
++public class Conversation
++{
++    public Guid Id { get; set; } = Guid.NewGuid();
++    public string UserId { get; set; } = string.Empty;
++    public string Title { get; set; } = "New conversation";
++    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
++    public ICollection<Message> Messages { get; set; } = [];
++}
+diff --git a/src/HrDashboard.Infrastructure/Entities/Message.cs b/src/HrDashboard.Infrastructure/Entities/Message.cs
+new file mode 100644
+index 0000000..a8bf15c
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Entities/Message.cs
+@@ -0,0 +1,15 @@
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Infrastructure.Entities;
++
++public class Message
++{
++    public Guid Id { get; set; } = Guid.NewGuid();
++    public Guid ConversationId { get; set; }
++    public Conversation Conversation { get; set; } = null!;
++    public MessageRole Role { get; set; }
++    public string Content { get; set; } = string.Empty;
++    /// <summary>Serialized List&lt;HrMetricRow&gt;. Display only — never sent to agent.</summary>
++    public string? MetricsJson { get; set; }
++    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
++}
+diff --git a/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj b/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj
+new file mode 100644
+index 0000000..b940a4b
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj
+@@ -0,0 +1,14 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <TargetFramework>net10.0</TargetFramework>
++    <Nullable>enable</Nullable>
++    <ImplicitUsings>enable</ImplicitUsings>
++  </PropertyGroup>
++  <ItemGroup>
++    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.*" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.*" />
++  </ItemGroup>
++  <ItemGroup>
++    <ProjectReference Include="..\HrDashboard.Agents\HrDashboard.Agents.csproj" />
++  </ItemGroup>
++</Project>
+diff --git a/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.Designer.cs b/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.Designer.cs
+new file mode 100644
+index 0000000..4aec6bd
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.Designer.cs
+@@ -0,0 +1,351 @@
++﻿// <auto-generated />
++using System;
++using HrDashboard.Infrastructure;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Metadata;
++using Microsoft.EntityFrameworkCore.Migrations;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++
++#nullable disable
++
++namespace HrDashboard.Infrastructure.Migrations
++{
++    [DbContext(typeof(AppDbContext))]
++    [Migration("20260820001527_InitialCreate")]
++    partial class InitialCreate
++    {
++        /// <inheritdoc />
++        protected override void BuildTargetModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.11")
++                .HasAnnotation("Relational:MaxIdentifierLength", 128);
++
++            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.AppUser", b =>
++                {
++                    b.Property<string>("Id")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<int>("AccessFailedCount")
++                        .HasColumnType("int");
++
++                    b.Property<string>("ConcurrencyStamp")
++                        .IsConcurrencyToken()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Email")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<bool>("EmailConfirmed")
++                        .HasColumnType("bit");
++
++                    b.Property<bool>("LockoutEnabled")
++                        .HasColumnType("bit");
++
++                    b.Property<DateTimeOffset?>("LockoutEnd")
++                        .HasColumnType("datetimeoffset");
++
++                    b.Property<string>("NormalizedEmail")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("NormalizedUserName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("PasswordHash")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("PhoneNumber")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<bool>("PhoneNumberConfirmed")
++                        .HasColumnType("bit");
++
++                    b.Property<string>("SecurityStamp")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<bool>("TwoFactorEnabled")
++                        .HasColumnType("bit");
++
++                    b.Property<string>("UserName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("NormalizedEmail")
++                        .HasDatabaseName("EmailIndex");
++
++                    b.HasIndex("NormalizedUserName")
++                        .IsUnique()
++                        .HasDatabaseName("UserNameIndex")
++                        .HasFilter("[NormalizedUserName] IS NOT NULL");
++
++                    b.ToTable("AspNetUsers", (string)null);
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Conversation", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<DateTime>("CreatedAt")
++                        .HasColumnType("datetime2");
++
++                    b.Property<string>("Title")
++                        .IsRequired()
++                        .HasMaxLength(512)
++                        .HasColumnType("nvarchar(512)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasMaxLength(450)
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("Conversations");
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Message", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<string>("Content")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<Guid>("ConversationId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<DateTime>("CreatedAt")
++                        .HasColumnType("datetime2");
++
++                    b.Property<string>("MetricsJson")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Role")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("ConversationId");
++
++                    b.ToTable("Messages");
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
++                {
++                    b.Property<string>("Id")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ConcurrencyStamp")
++                        .IsConcurrencyToken()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Name")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("NormalizedName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("NormalizedName")
++                        .IsUnique()
++                        .HasDatabaseName("RoleNameIndex")
++                        .HasFilter("[NormalizedName] IS NOT NULL");
++
++                    b.ToTable("AspNetRoles", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
++                {
++                    b.Property<int>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int");
++
++                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
++
++                    b.Property<string>("ClaimType")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("ClaimValue")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("RoleId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("RoleId");
++
++                    b.ToTable("AspNetRoleClaims", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
++                {
++                    b.Property<int>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int");
++
++                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
++
++                    b.Property<string>("ClaimType")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("ClaimValue")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("AspNetUserClaims", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
++                {
++                    b.Property<string>("LoginProvider")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ProviderKey")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ProviderDisplayName")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("LoginProvider", "ProviderKey");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("AspNetUserLogins", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<string>", b =>
++                {
++                    b.Property<string>("UserId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("RoleId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("UserId", "RoleId");
++
++                    b.HasIndex("RoleId");
++
++                    b.ToTable("AspNetUserRoles", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
++                {
++                    b.Property<string>("UserId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("LoginProvider")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("Name")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("Value")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.HasKey("UserId", "LoginProvider", "Name");
++
++                    b.ToTable("AspNetUserTokens", (string)null);
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Message", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.Entities.Conversation", "Conversation")
++                        .WithMany("Messages")
++                        .HasForeignKey("ConversationId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.Navigation("Conversation");
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
++                {
++                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
++                        .WithMany()
++                        .HasForeignKey("RoleId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<string>", b =>
++                {
++                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
++                        .WithMany()
++                        .HasForeignKey("RoleId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Conversation", b =>
++                {
++                    b.Navigation("Messages");
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.cs b/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.cs
+new file mode 100644
+index 0000000..4839ee8
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Migrations/20260820001527_InitialCreate.cs
+@@ -0,0 +1,276 @@
++﻿using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace HrDashboard.Infrastructure.Migrations
++{
++    /// <inheritdoc />
++    public partial class InitialCreate : Migration
++    {
++        /// <inheritdoc />
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "AspNetRoles",
++                columns: table => new
++                {
++                    Id = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    Name = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    NormalizedName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    ConcurrencyStamp = table.Column<string>(type: "nvarchar(max)", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetRoles", x => x.Id);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetUsers",
++                columns: table => new
++                {
++                    Id = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    UserName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    NormalizedUserName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    Email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    NormalizedEmail = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    EmailConfirmed = table.Column<bool>(type: "bit", nullable: false),
++                    PasswordHash = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    SecurityStamp = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    ConcurrencyStamp = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    PhoneNumber = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    PhoneNumberConfirmed = table.Column<bool>(type: "bit", nullable: false),
++                    TwoFactorEnabled = table.Column<bool>(type: "bit", nullable: false),
++                    LockoutEnd = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
++                    LockoutEnabled = table.Column<bool>(type: "bit", nullable: false),
++                    AccessFailedCount = table.Column<int>(type: "int", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetUsers", x => x.Id);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "Conversations",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    UserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
++                    Title = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
++                    CreatedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_Conversations", x => x.Id);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetRoleClaims",
++                columns: table => new
++                {
++                    Id = table.Column<int>(type: "int", nullable: false)
++                        .Annotation("SqlServer:Identity", "1, 1"),
++                    RoleId = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    ClaimType = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    ClaimValue = table.Column<string>(type: "nvarchar(max)", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetRoleClaims", x => x.Id);
++                    table.ForeignKey(
++                        name: "FK_AspNetRoleClaims_AspNetRoles_RoleId",
++                        column: x => x.RoleId,
++                        principalTable: "AspNetRoles",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetUserClaims",
++                columns: table => new
++                {
++                    Id = table.Column<int>(type: "int", nullable: false)
++                        .Annotation("SqlServer:Identity", "1, 1"),
++                    UserId = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    ClaimType = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    ClaimValue = table.Column<string>(type: "nvarchar(max)", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetUserClaims", x => x.Id);
++                    table.ForeignKey(
++                        name: "FK_AspNetUserClaims_AspNetUsers_UserId",
++                        column: x => x.UserId,
++                        principalTable: "AspNetUsers",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetUserLogins",
++                columns: table => new
++                {
++                    LoginProvider = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    ProviderKey = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    ProviderDisplayName = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    UserId = table.Column<string>(type: "nvarchar(450)", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetUserLogins", x => new { x.LoginProvider, x.ProviderKey });
++                    table.ForeignKey(
++                        name: "FK_AspNetUserLogins_AspNetUsers_UserId",
++                        column: x => x.UserId,
++                        principalTable: "AspNetUsers",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetUserRoles",
++                columns: table => new
++                {
++                    UserId = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    RoleId = table.Column<string>(type: "nvarchar(450)", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetUserRoles", x => new { x.UserId, x.RoleId });
++                    table.ForeignKey(
++                        name: "FK_AspNetUserRoles_AspNetRoles_RoleId",
++                        column: x => x.RoleId,
++                        principalTable: "AspNetRoles",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_AspNetUserRoles_AspNetUsers_UserId",
++                        column: x => x.UserId,
++                        principalTable: "AspNetUsers",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "AspNetUserTokens",
++                columns: table => new
++                {
++                    UserId = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    LoginProvider = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    Name = table.Column<string>(type: "nvarchar(450)", nullable: false),
++                    Value = table.Column<string>(type: "nvarchar(max)", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_AspNetUserTokens", x => new { x.UserId, x.LoginProvider, x.Name });
++                    table.ForeignKey(
++                        name: "FK_AspNetUserTokens_AspNetUsers_UserId",
++                        column: x => x.UserId,
++                        principalTable: "AspNetUsers",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "Messages",
++                columns: table => new
++                {
++                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    ConversationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    Role = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                    Content = table.Column<string>(type: "nvarchar(max)", nullable: false),
++                    MetricsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                    CreatedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_Messages", x => x.Id);
++                    table.ForeignKey(
++                        name: "FK_Messages_Conversations_ConversationId",
++                        column: x => x.ConversationId,
++                        principalTable: "Conversations",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateIndex(
++                name: "IX_AspNetRoleClaims_RoleId",
++                table: "AspNetRoleClaims",
++                column: "RoleId");
++
++            migrationBuilder.CreateIndex(
++                name: "RoleNameIndex",
++                table: "AspNetRoles",
++                column: "NormalizedName",
++                unique: true,
++                filter: "[NormalizedName] IS NOT NULL");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_AspNetUserClaims_UserId",
++                table: "AspNetUserClaims",
++                column: "UserId");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_AspNetUserLogins_UserId",
++                table: "AspNetUserLogins",
++                column: "UserId");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_AspNetUserRoles_RoleId",
++                table: "AspNetUserRoles",
++                column: "RoleId");
++
++            migrationBuilder.CreateIndex(
++                name: "EmailIndex",
++                table: "AspNetUsers",
++                column: "NormalizedEmail");
++
++            migrationBuilder.CreateIndex(
++                name: "UserNameIndex",
++                table: "AspNetUsers",
++                column: "NormalizedUserName",
++                unique: true,
++                filter: "[NormalizedUserName] IS NOT NULL");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_Conversations_UserId",
++                table: "Conversations",
++                column: "UserId");
++
++            migrationBuilder.CreateIndex(
++                name: "IX_Messages_ConversationId",
++                table: "Messages",
++                column: "ConversationId");
++        }
++
++        /// <inheritdoc />
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(
++                name: "AspNetRoleClaims");
++
++            migrationBuilder.DropTable(
++                name: "AspNetUserClaims");
++
++            migrationBuilder.DropTable(
++                name: "AspNetUserLogins");
++
++            migrationBuilder.DropTable(
++                name: "AspNetUserRoles");
++
++            migrationBuilder.DropTable(
++                name: "AspNetUserTokens");
++
++            migrationBuilder.DropTable(
++                name: "Messages");
++
++            migrationBuilder.DropTable(
++                name: "AspNetRoles");
++
++            migrationBuilder.DropTable(
++                name: "AspNetUsers");
++
++            migrationBuilder.DropTable(
++                name: "Conversations");
++        }
++    }
++}
+diff --git a/src/HrDashboard.Infrastructure/Migrations/AppDbContextModelSnapshot.cs b/src/HrDashboard.Infrastructure/Migrations/AppDbContextModelSnapshot.cs
+new file mode 100644
+index 0000000..f9f0875
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Migrations/AppDbContextModelSnapshot.cs
+@@ -0,0 +1,348 @@
++﻿// <auto-generated />
++using System;
++using HrDashboard.Infrastructure;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Metadata;
++using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
++
++#nullable disable
++
++namespace HrDashboard.Infrastructure.Migrations
++{
++    [DbContext(typeof(AppDbContext))]
++    partial class AppDbContextModelSnapshot : ModelSnapshot
++    {
++        protected override void BuildModel(ModelBuilder modelBuilder)
++        {
++#pragma warning disable 612, 618
++            modelBuilder
++                .HasAnnotation("ProductVersion", "10.0.11")
++                .HasAnnotation("Relational:MaxIdentifierLength", 128);
++
++            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.AppUser", b =>
++                {
++                    b.Property<string>("Id")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<int>("AccessFailedCount")
++                        .HasColumnType("int");
++
++                    b.Property<string>("ConcurrencyStamp")
++                        .IsConcurrencyToken()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Email")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<bool>("EmailConfirmed")
++                        .HasColumnType("bit");
++
++                    b.Property<bool>("LockoutEnabled")
++                        .HasColumnType("bit");
++
++                    b.Property<DateTimeOffset?>("LockoutEnd")
++                        .HasColumnType("datetimeoffset");
++
++                    b.Property<string>("NormalizedEmail")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("NormalizedUserName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("PasswordHash")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("PhoneNumber")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<bool>("PhoneNumberConfirmed")
++                        .HasColumnType("bit");
++
++                    b.Property<string>("SecurityStamp")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<bool>("TwoFactorEnabled")
++                        .HasColumnType("bit");
++
++                    b.Property<string>("UserName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("NormalizedEmail")
++                        .HasDatabaseName("EmailIndex");
++
++                    b.HasIndex("NormalizedUserName")
++                        .IsUnique()
++                        .HasDatabaseName("UserNameIndex")
++                        .HasFilter("[NormalizedUserName] IS NOT NULL");
++
++                    b.ToTable("AspNetUsers", (string)null);
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Conversation", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<DateTime>("CreatedAt")
++                        .HasColumnType("datetime2");
++
++                    b.Property<string>("Title")
++                        .IsRequired()
++                        .HasMaxLength(512)
++                        .HasColumnType("nvarchar(512)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasMaxLength(450)
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("Conversations");
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Message", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<string>("Content")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<Guid>("ConversationId")
++                        .HasColumnType("uniqueidentifier");
++
++                    b.Property<DateTime>("CreatedAt")
++                        .HasColumnType("datetime2");
++
++                    b.Property<string>("MetricsJson")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Role")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("ConversationId");
++
++                    b.ToTable("Messages");
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
++                {
++                    b.Property<string>("Id")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ConcurrencyStamp")
++                        .IsConcurrencyToken()
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("Name")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.Property<string>("NormalizedName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("NormalizedName")
++                        .IsUnique()
++                        .HasDatabaseName("RoleNameIndex")
++                        .HasFilter("[NormalizedName] IS NOT NULL");
++
++                    b.ToTable("AspNetRoles", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
++                {
++                    b.Property<int>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int");
++
++                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
++
++                    b.Property<string>("ClaimType")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("ClaimValue")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("RoleId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("RoleId");
++
++                    b.ToTable("AspNetRoleClaims", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
++                {
++                    b.Property<int>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int");
++
++                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
++
++                    b.Property<string>("ClaimType")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("ClaimValue")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("AspNetUserClaims", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
++                {
++                    b.Property<string>("LoginProvider")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ProviderKey")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("ProviderDisplayName")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.Property<string>("UserId")
++                        .IsRequired()
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("LoginProvider", "ProviderKey");
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("AspNetUserLogins", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<string>", b =>
++                {
++                    b.Property<string>("UserId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("RoleId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.HasKey("UserId", "RoleId");
++
++                    b.HasIndex("RoleId");
++
++                    b.ToTable("AspNetUserRoles", (string)null);
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
++                {
++                    b.Property<string>("UserId")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("LoginProvider")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("Name")
++                        .HasColumnType("nvarchar(450)");
++
++                    b.Property<string>("Value")
++                        .HasColumnType("nvarchar(max)");
++
++                    b.HasKey("UserId", "LoginProvider", "Name");
++
++                    b.ToTable("AspNetUserTokens", (string)null);
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Message", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.Entities.Conversation", "Conversation")
++                        .WithMany("Messages")
++                        .HasForeignKey("ConversationId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.Navigation("Conversation");
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
++                {
++                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
++                        .WithMany()
++                        .HasForeignKey("RoleId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<string>", b =>
++                {
++                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
++                        .WithMany()
++                        .HasForeignKey("RoleId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
++                {
++                    b.HasOne("HrDashboard.Infrastructure.AppUser", null)
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++                });
++
++            modelBuilder.Entity("HrDashboard.Infrastructure.Entities.Conversation", b =>
++                {
++                    b.Navigation("Messages");
++                });
++#pragma warning restore 612, 618
++        }
++    }
++}
+diff --git a/src/HrDashboard.Infrastructure/Repositories/ConversationRepository.cs b/src/HrDashboard.Infrastructure/Repositories/ConversationRepository.cs
+new file mode 100644
+index 0000000..909a266
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Repositories/ConversationRepository.cs
+@@ -0,0 +1,75 @@
++using HrDashboard.Agents;
++using HrDashboard.Agents.Models;
++using HrDashboard.Infrastructure.Entities;
++using Microsoft.EntityFrameworkCore;
++
++namespace HrDashboard.Infrastructure.Repositories;
++
++public class ConversationRepository(AppDbContext db) : IConversationRepository
++{
++    public async Task<List<ConversationSummary>> GetByUserAsync(
++        string userId, CancellationToken ct = default)
++    {
++        return await db.Conversations
++            .Where(c => c.UserId == userId)
++            .OrderByDescending(c => c.CreatedAt)
++            .Select(c => new ConversationSummary(c.Id, c.Title, c.CreatedAt))
++            .ToListAsync(ct);
++    }
++
++    public async Task<ConversationSummary> CreateAsync(
++        string userId, string title, CancellationToken ct = default)
++    {
++        var conv = new Conversation { UserId = userId, Title = title };
++        db.Conversations.Add(conv);
++        await db.SaveChangesAsync(ct);
++        return new ConversationSummary(conv.Id, conv.Title, conv.CreatedAt);
++    }
++
++    public async Task UpdateTitleAsync(
++        Guid conversationId, string title, CancellationToken ct = default)
++    {
++        await db.Conversations
++            .Where(c => c.Id == conversationId)
++            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Title, title), ct);
++    }
++
++    public async Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
++        Guid conversationId, CancellationToken ct = default)
++    {
++        return await db.Messages
++            .Where(m => m.ConversationId == conversationId)
++            .OrderBy(m => m.CreatedAt)
++            .Select(m => new ValueTuple<MessageRole, string>(m.Role, m.Content))
++            .ToListAsync(ct);
++    }
++
++    public async Task<List<MessageDisplay>> GetMessagesForDisplayAsync(
++        Guid conversationId, CancellationToken ct = default)
++    {
++        return await db.Messages
++            .Where(m => m.ConversationId == conversationId)
++            .OrderBy(m => m.CreatedAt)
++            .Select(m => new MessageDisplay(m.Id, m.Role, m.Content, m.MetricsJson, m.CreatedAt))
++            .ToListAsync(ct);
++    }
++
++    public async Task<MessageDisplay> AddMessageAsync(
++        Guid conversationId,
++        MessageRole role,
++        string content,
++        string? metricsJson = null,
++        CancellationToken ct = default)
++    {
++        var msg = new Message
++        {
++            ConversationId = conversationId,
++            Role = role,
++            Content = content,
++            MetricsJson = metricsJson
++        };
++        db.Messages.Add(msg);
++        await db.SaveChangesAsync(ct);
++        return new MessageDisplay(msg.Id, msg.Role, msg.Content, msg.MetricsJson, msg.CreatedAt);
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/App.razor b/src/HrDashboard.Web/Components/App.razor
+index 4ceecc1..c0d46c1 100644
+--- a/src/HrDashboard.Web/Components/App.razor
++++ b/src/HrDashboard.Web/Components/App.razor
+@@ -4,15 +4,17 @@
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <title>HR Analytics Portal</title>
+     <base href="/" />
+     <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+     <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+     <link rel="stylesheet" href="app.css" />
+     <HeadOutlet />
+ </head>
+ <body>
+-    <Routes @rendermode="InteractiveServer" />
++    <CascadingAuthenticationState>
++        <Routes @rendermode="InteractiveServer" />
++    </CascadingAuthenticationState>
+     <script src="_framework/blazor.web.js"></script>
+     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+ </body>
+ </html>
+diff --git a/src/HrDashboard.Web/Components/Chat/ChatThread.razor b/src/HrDashboard.Web/Components/Chat/ChatThread.razor
+new file mode 100644
+index 0000000..f8ed976
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Chat/ChatThread.razor
+@@ -0,0 +1,56 @@
++@inject ChatSessionService Session
++@implements IDisposable
++
++<div class="hr-messages" @ref="_scrollRef">
++    @if (Session.Messages.Count == 0)
++    {
++        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0.5">
++            <MudIcon Icon="@Icons.Material.Filled.Chat" Style="font-size:48px" />
++            <MudText Typo="Typo.body1" Class="mt-2">Ask anything about your HR data</MudText>
++        </div>
++    }
++    @foreach (var msg in Session.Messages)
++    {
++        @if (msg.Role == HrDashboard.Agents.Models.MessageRole.User)
++        {
++            <div class="msg-user">@msg.Content</div>
++        }
++        else
++        {
++            <div class="msg-assistant @(msg.IsStreaming && string.IsNullOrEmpty(msg.Content) ? "msg-streaming" : "")">
++                @if (string.IsNullOrEmpty(msg.Content) && msg.IsStreaming)
++                {
++                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
++                }
++                else
++                {
++                    @msg.Content
++                    @if (msg.IsStreaming)
++                    {
++                        <span class="msg-streaming"></span>
++                    }
++                }
++            </div>
++        }
++    }
++</div>
++
++@code {
++    private ElementReference _scrollRef;
++
++    protected override void OnInitialized()
++    {
++        Session.OnChange += OnSessionChange;
++    }
++
++    private void OnSessionChange()
++    {
++        InvokeAsync(async () =>
++        {
++            StateHasChanged();
++            await Task.Yield();
++        });
++    }
++
++    public void Dispose() => Session.OnChange -= OnSessionChange;
++}
+diff --git a/src/HrDashboard.Web/Components/Chat/PromptBar.razor b/src/HrDashboard.Web/Components/Chat/PromptBar.razor
+new file mode 100644
+index 0000000..248ca12
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Chat/PromptBar.razor
+@@ -0,0 +1,70 @@
++@inject ChatSessionService Session
++@inject AuthenticationStateProvider AuthStateProvider
++@implements IDisposable
++
++<div class="hr-prompt-bar">
++    <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
++        <MudTextField @bind-Value="_prompt"
++                      Placeholder="Ask an HR analytics question..."
++                      Variant="Variant.Outlined"
++                      FullWidth="true"
++                      Lines="2"
++                      Disabled="Session.IsStreaming"
++                      OnKeyDown="HandleKeyDown" />
++        <MudIconButton Icon="@Icons.Material.Filled.Send"
++                       Color="Color.Primary"
++                       Size="Size.Large"
++                       OnClick="SendAsync"
++                       Disabled="Session.IsStreaming || string.IsNullOrWhiteSpace(_prompt)"
++                       Title="Send (Ctrl+Enter)" />
++    </MudStack>
++
++    <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-2" Spacing="1">
++        @foreach (var preset in _presets)
++        {
++            <MudChip T="string" OnClick="() => SelectPreset(preset)"
++                     Color="Color.Default" Size="Size.Small"
++                     Disabled="Session.IsStreaming">@preset</MudChip>
++        }
++    </MudStack>
++</div>
++
++@code {
++    private string _prompt = string.Empty;
++    private string? _userId;
++
++    private readonly string[] _presets =
++    [
++        "Average salary by department",
++        "Top 10 highest-paid employees",
++        "Headcount per department",
++        "Job salary ranges",
++        "Departments with more than 5 employees"
++    ];
++
++    protected override async Task OnInitializedAsync()
++    {
++        Session.OnChange += StateHasChanged;
++        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
++        _userId = auth.User.FindFirst(
++            System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
++    }
++
++    private void SelectPreset(string preset) => _prompt = preset;
++
++    private async Task HandleKeyDown(KeyboardEventArgs e)
++    {
++        if (e.Key == "Enter" && e.CtrlKey)
++            await SendAsync();
++    }
++
++    private async Task SendAsync()
++    {
++        if (string.IsNullOrWhiteSpace(_prompt) || Session.IsStreaming || _userId is null) return;
++        var prompt = _prompt;
++        _prompt = string.Empty;
++        await Session.SendAsync(prompt, _userId);
++    }
++
++    public void Dispose() => Session.OnChange -= StateHasChanged;
++}
+diff --git a/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor b/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor
+new file mode 100644
+index 0000000..f56ebd7
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor
+@@ -0,0 +1,88 @@
++@inject ChatSessionService Session
++@implements IDisposable
++
++@if (Session.CurrentMetrics.Count == 0)
++{
++    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;opacity:0.4">
++        <MudIcon Icon="@Icons.Material.Filled.BarChart" Style="font-size:48px" />
++        <MudText Typo="Typo.body2" Class="mt-2">Results appear here</MudText>
++    </div>
++}
++else
++{
++    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
++        <MudText Typo="Typo.subtitle2">Visualization</MudText>
++        <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
++                   Variant="Variant.Outlined" Style="width:130px">
++            <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
++            <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
++            <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
++        </MudSelect>
++    </MudStack>
++
++    <MudChart ChartType="_chartType"
++              ChartSeries="@_chartSeries"
++              XAxisLabels="@_chartLabels"
++              Width="100%"
++              Height="220px"
++              Class="mb-4" />
++
++    <MudText Typo="Typo.subtitle2" Class="mb-2">
++        Data (@Session.CurrentMetrics.Count rows)
++    </MudText>
++    <MudDataGrid T="HrMetricRow"
++                 Items="Session.CurrentMetrics"
++                 Dense="true"
++                 Striped="true"
++                 Hover="true"
++                 Filterable="false"
++                 SortMode="SortMode.Single">
++        <Columns>
++            <PropertyColumn Property="r => r.Label"    Title="Label"    Sortable="true" />
++            <PropertyColumn Property="r => r.Value"    Title="Value"    Sortable="true" Format="N2" />
++            <PropertyColumn Property="r => r.Category" Title="Category" Sortable="true" />
++        </Columns>
++    </MudDataGrid>
++}
++
++@code {
++    private ChartType _chartType = ChartType.Bar;
++    private List<ChartSeries> _chartSeries = [];
++    private string[] _chartLabels = [];
++
++    protected override void OnInitialized()
++    {
++        Session.OnChange += OnSessionChange;
++    }
++
++    private void OnSessionChange()
++    {
++        BuildChart();
++        InvokeAsync(StateHasChanged);
++    }
++
++    private void BuildChart()
++    {
++        if (Session.CurrentMetrics.Count == 0)
++        {
++            _chartSeries = [];
++            _chartLabels = [];
++            return;
++        }
++
++        _chartLabels = Session.CurrentMetrics
++            .Select(r => r.Label.Length <= 18 ? r.Label : r.Label[..18] + "…")
++            .ToArray();
++
++        _chartSeries =
++        [
++            new ChartSeries
++            {
++                Name = "Value",
++                Data = Session.CurrentMetrics.Select(r => r.Value).ToArray()
++            }
++        ];
++    }
++
++    public void Dispose() => Session.OnChange -= OnSessionChange;
++}
+diff --git a/src/HrDashboard.Web/Components/Layout/ConversationList.razor b/src/HrDashboard.Web/Components/Layout/ConversationList.razor
+new file mode 100644
+index 0000000..ed3b253
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Layout/ConversationList.razor
+@@ -0,0 +1,71 @@
++@inject ChatSessionService Session
++@inject AuthenticationStateProvider AuthStateProvider
++@implements IDisposable
++
++<div style="display:flex;flex-direction:column;height:100%">
++
++    <div class="conv-list">
++        @if (Session.Conversations.Count == 0)
++        {
++            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="pa-3">
++                No conversations yet. Start one below.
++            </MudText>
++        }
++        @foreach (var conv in Session.Conversations)
++        {
++            var isActive = Session.CurrentConversation?.Id == conv.Id;
++            <div class="conv-item @(isActive ? "active" : "")"
++                 @onclick="() => SelectConversationAsync(conv.Id)">
++                <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
++                    @conv.Title
++                </MudText>
++                <MudText Typo="Typo.caption" Color="Color.Secondary">
++                    @conv.CreatedAt.ToLocalTime().ToString("MMM d")
++                </MudText>
++            </div>
++        }
++    </div>
++
++    <div class="conv-profile">
++        <AuthorizeView>
++            <Authorized>
++                <div style="display:flex;align-items:center;gap:8px">
++                    <MudIcon Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Secondary" />
++                    <MudText Typo="Typo.body2" Style="flex:1;overflow:hidden;text-overflow:ellipsis">
++                        @context.User.Identity?.Name
++                    </MudText>
++                    <MudIconButton Icon="@Icons.Material.Filled.Logout"
++                                   Size="Size.Small"
++                                   Href="/account/logout"
++                                   Title="Sign out" />
++                </div>
++            </Authorized>
++        </AuthorizeView>
++    </div>
++
++</div>
++
++@code {
++    [Parameter] public EventCallback OnNewChat { get; set; }
++
++    private string? _userId;
++
++    protected override async Task OnInitializedAsync()
++    {
++        Session.OnChange += StateHasChanged;
++        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
++        _userId = auth.User.FindFirst(
++            System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
++
++        if (_userId is not null)
++            await Session.LoadUserConversationsAsync(_userId);
++    }
++
++    private async Task SelectConversationAsync(Guid id)
++    {
++        if (_userId is null) return;
++        await Session.LoadConversationAsync(id, _userId);
++    }
++
++    public void Dispose() => Session.OnChange -= StateHasChanged;
++}
+diff --git a/src/HrDashboard.Web/Components/Layout/MainLayout.razor b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+index 2174a07..d3f9604 100644
+--- a/src/HrDashboard.Web/Components/Layout/MainLayout.razor
++++ b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+@@ -1,15 +1,73 @@
+ @inherits LayoutComponentBase
++@inject NavigationManager Nav
+ 
+ <MudThemeProvider />
+ <MudPopoverProvider />
+ <MudDialogProvider />
+ <MudSnackbarProvider />
+ 
+-<MudLayout>
+-    <MudAppBar Elevation="1" Color="Color.Primary">
+-        <MudText Typo="Typo.h6">HR Analytics Portal</MudText>
+-    </MudAppBar>
+-    <MudMainContent Class="pt-4">
++<div class="hr-shell">
++
++    <!-- Left panel -->
++    <div class="hr-left @(_leftOpen ? "" : "collapsed")">
++        <div style="display:flex;align-items:center;padding:8px 8px 0 8px;gap:4px">
++            <MudIconButton Icon="@Icons.Material.Filled.Menu"
++                           Size="Size.Small"
++                           OnClick="() => _leftOpen = !_leftOpen"
++                           Title="Toggle sidebar" />
++            <MudIconButton Icon="@Icons.Material.Filled.Add"
++                           Size="Size.Small"
++                           Color="Color.Primary"
++                           OnClick="NewChat"
++                           Title="New conversation" />
++        </div>
++        <ConversationList OnNewChat="NewChat" />
++    </div>
++
++    <!-- Center panel -->
++    <div class="hr-center">
++        <div style="display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid rgba(0,0,0,0.12);gap:8px">
++            @if (!_leftOpen)
++            {
++                <MudIconButton Icon="@Icons.Material.Filled.Menu"
++                               Size="Size.Small"
++                               OnClick="() => _leftOpen = true"
++                               Title="Open sidebar" />
++            }
++            <MudText Typo="Typo.subtitle1" Style="flex:1">HR Analytics Portal</MudText>
++            @if (!_rightOpen)
++            {
++                <MudIconButton Icon="@Icons.Material.Filled.BarChart"
++                               Size="Size.Small"
++                               OnClick="() => _rightOpen = true"
++                               Title="Show results panel" />
++            }
++        </div>
+         @Body
+-    </MudMainContent>
+-</MudLayout>
++    </div>
++
++    <!-- Right panel -->
++    <div class="hr-right @(_rightOpen ? "" : "collapsed")">
++        <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid rgba(0,0,0,0.12)">
++            <MudText Typo="Typo.subtitle2" Style="flex:1">Results</MudText>
++            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight"
++                           Size="Size.Small"
++                           OnClick="() => _rightOpen = false"
++                           Title="Hide results panel" />
++        </div>
++        <div class="hr-right-content">
++            <ResultsPanel />
++        </div>
++    </div>
++
++</div>
++
++@code {
++    private bool _leftOpen = true;
++    private bool _rightOpen = true;
++
++    private void NewChat()
++    {
++        Nav.NavigateTo("/", forceLoad: false);
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor b/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor
+new file mode 100644
+index 0000000..dd6076a
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Layout/RedirectToLogin.razor
+@@ -0,0 +1,8 @@
++@inject NavigationManager Nav
++
++@code {
++    protected override void OnInitialized()
++    {
++        Nav.NavigateTo("/login", forceLoad: false);
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/Pages/Auth/Login.razor b/src/HrDashboard.Web/Components/Pages/Auth/Login.razor
+new file mode 100644
+index 0000000..e7397df
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Pages/Auth/Login.razor
+@@ -0,0 +1,55 @@
++@page "/login"
++@using Microsoft.AspNetCore.Identity
++@inject SignInManager<HrDashboard.Infrastructure.AppUser> SignInManager
++@inject NavigationManager Nav
++
++<PageTitle>Sign in — HR Analytics</PageTitle>
++
++<div class="auth-container">
++    <MudPaper Class="auth-card pa-8" Elevation="3">
++        <MudText Typo="Typo.h5" Class="mb-1">HR Analytics Portal</MudText>
++        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">Sign in to continue</MudText>
++
++        @if (_error is not null)
++        {
++            <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
++        }
++
++        <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
++                      InputType="InputType.Email" Class="mb-3" FullWidth="true" />
++        <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
++                      InputType="InputType.Password" Class="mb-4" FullWidth="true" />
++
++        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
++                   OnClick="LoginAsync" Disabled="_loading">
++            @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
++            else { <span>Sign in</span> }
++        </MudButton>
++
++        <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
++            No account? <MudLink Href="/register">Register</MudLink>
++        </MudText>
++    </MudPaper>
++</div>
++
++@code {
++    private string _email = string.Empty;
++    private string _password = string.Empty;
++    private string? _error;
++    private bool _loading;
++
++    private async Task LoginAsync()
++    {
++        _loading = true;
++        _error = null;
++        var result = await SignInManager.PasswordSignInAsync(
++            _email, _password, isPersistent: true, lockoutOnFailure: false);
++
++        if (result.Succeeded)
++            Nav.NavigateTo("/", forceLoad: true);
++        else
++            _error = "Invalid email or password.";
++
++        _loading = false;
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/Pages/Auth/Register.razor b/src/HrDashboard.Web/Components/Pages/Auth/Register.razor
+new file mode 100644
+index 0000000..71a29a8
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Pages/Auth/Register.razor
+@@ -0,0 +1,72 @@
++@page "/register"
++@using Microsoft.AspNetCore.Identity
++@inject UserManager<HrDashboard.Infrastructure.AppUser> UserManager
++@inject SignInManager<HrDashboard.Infrastructure.AppUser> SignInManager
++@inject NavigationManager Nav
++
++<PageTitle>Register — HR Analytics</PageTitle>
++
++<div class="auth-container">
++    <MudPaper Class="auth-card pa-8" Elevation="3">
++        <MudText Typo="Typo.h5" Class="mb-1">Create account</MudText>
++        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">HR Analytics Portal</MudText>
++
++        @if (_errors.Count > 0)
++        {
++            <MudAlert Severity="Severity.Error" Class="mb-4">
++                @foreach (var e in _errors) { <div>@e</div> }
++            </MudAlert>
++        }
++
++        <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
++                      InputType="InputType.Email" Class="mb-3" FullWidth="true" />
++        <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
++                      InputType="InputType.Password" Class="mb-3" FullWidth="true" />
++        <MudTextField @bind-Value="_confirm" Label="Confirm password" Variant="Variant.Outlined"
++                      InputType="InputType.Password" Class="mb-4" FullWidth="true" />
++
++        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
++                   OnClick="RegisterAsync" Disabled="_loading">
++            @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
++            else { <span>Register</span> }
++        </MudButton>
++
++        <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
++            Already have an account? <MudLink Href="/login">Sign in</MudLink>
++        </MudText>
++    </MudPaper>
++</div>
++
++@code {
++    private string _email = string.Empty;
++    private string _password = string.Empty;
++    private string _confirm = string.Empty;
++    private List<string> _errors = [];
++    private bool _loading;
++
++    private async Task RegisterAsync()
++    {
++        _errors = [];
++        if (_password != _confirm)
++        {
++            _errors = ["Passwords do not match."];
++            return;
++        }
++
++        _loading = true;
++        var user = new HrDashboard.Infrastructure.AppUser { UserName = _email, Email = _email };
++        var result = await UserManager.CreateAsync(user, _password);
++
++        if (result.Succeeded)
++        {
++            await SignInManager.SignInAsync(user, isPersistent: true);
++            Nav.NavigateTo("/", forceLoad: true);
++        }
++        else
++        {
++            _errors = result.Errors.Select(e => e.Description).ToList();
++        }
++
++        _loading = false;
++    }
++}
+diff --git a/src/HrDashboard.Web/Components/Pages/Dashboard.razor b/src/HrDashboard.Web/Components/Pages/Dashboard.razor
+index b9aa34c..0f74eff 100644
+--- a/src/HrDashboard.Web/Components/Pages/Dashboard.razor
++++ b/src/HrDashboard.Web/Components/Pages/Dashboard.razor
+@@ -1,199 +1,9 @@
+ @page "/"
+-@using HrDashboard.Agents
+-@using HrDashboard.Agents.Models
+-@using MudBlazor
+-@inject IHrAgentService Agent
+-@inject ILogger<Dashboard> Logger
++@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+ 
+-<PageTitle>HR Analytics Portal</PageTitle>
++<PageTitle>HR Analytics</PageTitle>
+ 
+-<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-6">
+-
+-    <MudText Typo="Typo.h4" Class="mb-2">AI HR Executive Analytics</MudText>
+-    <MudText Typo="Typo.body2" Class="mb-6" Color="Color.Secondary">
+-        Ask any HR analytics question in natural language. The AI agent queries Oracle HR data and returns structured results.
+-    </MudText>
+-
+-    <!-- Prompt input -->
+-    <MudPaper Elevation="2" Class="pa-4 mb-4">
+-        <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
+-            <MudTextField @bind-Value="_prompt"
+-                          Label="HR Analytics Query"
+-                          Placeholder="e.g. Show me average salary by department"
+-                          Variant="Variant.Outlined"
+-                          FullWidth="true"
+-                          Lines="2"
+-                          Disabled="_loading"
+-                          OnKeyDown="HandleKeyDown" />
+-            <MudButton Variant="Variant.Filled"
+-                       Color="Color.Primary"
+-                       Size="Size.Large"
+-                       OnClick="SubmitAsync"
+-                       Disabled="_loading || string.IsNullOrWhiteSpace(_prompt)"
+-                       Style="min-width:120px">
+-                @if (_loading)
+-                {
+-                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+-                }
+-                else
+-                {
+-                    <span>Analyze</span>
+-                }
+-            </MudButton>
+-        </MudStack>
+-
+-        <!-- Preset chips -->
+-        <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-3" Spacing="1">
+-            @foreach (var preset in _presets)
+-            {
+-                <MudChip T="string" OnClick="() => SelectPreset(preset)" Color="Color.Default" Size="Size.Small">@preset</MudChip>
+-            }
+-        </MudStack>
+-    </MudPaper>
+-
+-    @if (_loading)
+-    {
+-        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+-    }
+-
+-    @if (_error is not null)
+-    {
+-        <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+-            @_error
+-        </MudAlert>
+-    }
+-
+-    @if (_metrics.Count > 0)
+-    {
+-        <!-- Chart -->
+-        <MudPaper Elevation="2" Class="pa-4 mb-4">
+-            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+-                <MudText Typo="Typo.h6">Visualization</MudText>
+-                <MudSelect T="ChartType" @bind-Value="_chartType" Label="Chart Type" Variant="Variant.Outlined" Style="width:160px">
+-                    <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
+-                    <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
+-                    <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
+-                </MudSelect>
+-            </MudStack>
+-            <MudChart ChartType="_chartType"
+-                      ChartSeries="@_chartSeries"
+-                      XAxisLabels="@_chartLabels"
+-                      Width="100%"
+-                      Height="300px" />
+-        </MudPaper>
+-
+-        <!-- Data grid -->
+-        <MudPaper Elevation="2" Class="pa-4 mb-4">
+-            <MudText Typo="Typo.h6" Class="mb-3">Results (@_metrics.Count rows)</MudText>
+-            <MudDataGrid T="HrMetricRow"
+-                         Items="_metrics"
+-                         Dense="true"
+-                         Striped="true"
+-                         Hover="true"
+-                         Filterable="true"
+-                         SortMode="SortMode.Multiple">
+-                <Columns>
+-                    <PropertyColumn Property="r => r.Label"    Title="Label"    Sortable="true" />
+-                    <PropertyColumn Property="r => r.Value"    Title="Value"    Sortable="true" Format="N2" />
+-                    <PropertyColumn Property="r => r.Category" Title="Category" Sortable="true" />
+-                </Columns>
+-            </MudDataGrid>
+-        </MudPaper>
+-
+-        <!-- Raw LLM response -->
+-        <MudExpansionPanels>
+-            <MudExpansionPanel Text="Raw agent response">
+-                <MudText Style="white-space:pre-wrap;font-family:monospace;font-size:0.8rem">@_rawText</MudText>
+-            </MudExpansionPanel>
+-        </MudExpansionPanels>
+-    }
+-
+-    @if (!string.IsNullOrWhiteSpace(_rawText) && _metrics.Count == 0)
+-    {
+-        <MudPaper Elevation="2" Class="pa-4">
+-            <MudText Style="white-space:pre-wrap">@_rawText</MudText>
+-        </MudPaper>
+-    }
+-
+-</MudContainer>
+-
+-@code {
+-    private string _prompt = string.Empty;
+-    private bool _loading;
+-    private string? _error;
+-    private string _rawText = string.Empty;
+-    private List<HrMetricRow> _metrics = [];
+-    private ChartType _chartType = ChartType.Bar;
+-
+-    private List<ChartSeries> _chartSeries = [];
+-    private string[] _chartLabels = [];
+-
+-    private readonly string[] _presets =
+-    [
+-        "Average salary by department",
+-        "Top 10 highest-paid employees",
+-        "Headcount per department",
+-        "Job salary ranges",
+-        "Departments with more than 5 employees"
+-    ];
+-
+-    private void SelectPreset(string preset)
+-    {
+-        _prompt = preset;
+-    }
+-
+-    private async Task HandleKeyDown(KeyboardEventArgs e)
+-    {
+-        if (e.Key == "Enter" && e.CtrlKey)
+-            await SubmitAsync();
+-    }
+-
+-    private async Task SubmitAsync()
+-    {
+-        if (string.IsNullOrWhiteSpace(_prompt) || _loading) return;
+-
+-        _loading = true;
+-        _error   = null;
+-        _metrics = [];
+-        _chartSeries = [];
+-        _chartLabels = [];
+-        _rawText = string.Empty;
+-
+-        try
+-        {
+-            Logger.LogInformation("Dashboard submitting prompt: {Prompt}", _prompt);
+-            var (raw, metrics) = await Agent.AskAsync(_prompt);
+-            _rawText = raw;
+-            _metrics = [.. metrics];
+-            BuildChart();
+-            Logger.LogInformation("Dashboard received {Count} metric rows", _metrics.Count);
+-        }
+-        catch (Exception ex)
+-        {
+-            Logger.LogError(ex, "Agent call failed for prompt: {Prompt}", _prompt);
+-            _error = $"Agent error: {ex.Message}";
+-        }
+-        finally
+-        {
+-            _loading = false;
+-        }
+-    }
+-
+-    private void BuildChart()
+-    {
+-        if (_metrics.Count == 0) return;
+-
+-        _chartLabels = _metrics.Select(r => Truncate(r.Label, 18)).ToArray();
+-        _chartSeries =
+-        [
+-            new ChartSeries
+-            {
+-                Name = "Value",
+-                Data = _metrics.Select(r => r.Value).ToArray()
+-            }
+-        ];
+-    }
+-
+-    private static string Truncate(string s, int max) =>
+-        s.Length <= max ? s : s[..max] + "…";
+-}
++<div style="display:flex;flex-direction:column;height:100%">
++    <ChatThread />
++    <PromptBar />
++</div>
+diff --git a/src/HrDashboard.Web/Components/Routes.razor b/src/HrDashboard.Web/Components/Routes.razor
+index 6c97c99..5f29ba9 100644
+--- a/src/HrDashboard.Web/Components/Routes.razor
++++ b/src/HrDashboard.Web/Components/Routes.razor
+@@ -1,6 +1,10 @@
+ <Router AppAssembly="typeof(App).Assembly">
+     <Found Context="routeData">
+-        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
++        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
++            <NotAuthorized>
++                <RedirectToLogin />
++            </NotAuthorized>
++        </AuthorizeRouteView>
+         <FocusOnNavigate RouteData="routeData" Selector="h1" />
+     </Found>
+ </Router>
+diff --git a/src/HrDashboard.Web/Components/_Imports.razor b/src/HrDashboard.Web/Components/_Imports.razor
+index 158a408..18792ab 100644
+--- a/src/HrDashboard.Web/Components/_Imports.razor
++++ b/src/HrDashboard.Web/Components/_Imports.razor
+@@ -1,13 +1,16 @@
+ @using Microsoft.AspNetCore.Components
++@using Microsoft.AspNetCore.Components.Authorization
+ @using Microsoft.AspNetCore.Components.Routing
+ @using Microsoft.AspNetCore.Components.Web
+ @using static Microsoft.AspNetCore.Components.Web.RenderMode
+ @using Microsoft.AspNetCore.Components.Web.Virtualization
+ @using Microsoft.AspNetCore.Components.Forms
+ @using HrDashboard.Web.Components
++@using HrDashboard.Web.Components.Chat
+ @using HrDashboard.Web.Components.Layout
+ @using HrDashboard.Web.Components.Pages
++@using HrDashboard.Web.Services
+ @using MudBlazor
+ @using HrDashboard.Agents
+ @using HrDashboard.Agents.Models
+ @using Microsoft.Extensions.Logging
+diff --git a/src/HrDashboard.Web/HrDashboard.Web.csproj b/src/HrDashboard.Web/HrDashboard.Web.csproj
+index 23ec122..847188f 100644
+--- a/src/HrDashboard.Web/HrDashboard.Web.csproj
++++ b/src/HrDashboard.Web/HrDashboard.Web.csproj
+@@ -8,15 +8,19 @@
+   <ItemGroup>
+     <PackageReference Include="MudBlazor" Version="8.*" />
+     <PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0" />
+     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
+     <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
+     <PackageReference Include="Azure.Identity" Version="1.*" />
+     <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.*" />
+     <PackageReference Include="OllamaSharp" Version="5.4.25" />
+     <PackageReference Include="Serilog.AspNetCore" Version="9.*" />
+     <PackageReference Include="Serilog.Sinks.File" Version="6.*" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.*" />
++    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.*" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.*" />
+   </ItemGroup>
+   <ItemGroup>
+     <ProjectReference Include="..\HrDashboard.Agents\HrDashboard.Agents.csproj" />
++    <ProjectReference Include="..\HrDashboard.Infrastructure\HrDashboard.Infrastructure.csproj" />
+   </ItemGroup>
+ </Project>
+diff --git a/src/HrDashboard.Web/Program.cs b/src/HrDashboard.Web/Program.cs
+index 1c749bb..6209e35 100644
+--- a/src/HrDashboard.Web/Program.cs
++++ b/src/HrDashboard.Web/Program.cs
+@@ -1,110 +1,141 @@
+ using Azure.Identity;
+ using HrDashboard.Agents;
++using HrDashboard.Infrastructure;
++using HrDashboard.Infrastructure.Repositories;
++using Microsoft.AspNetCore.Identity;
++using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.AI;
+ using MudBlazor.Services;
+ using OllamaSharp;
+ using Serilog;
+ 
+-// ── 1. Bootstrap Serilog ─────────────────────────────────────────────────────
+-
+ Log.Logger = new LoggerConfiguration()
+     .WriteTo.Console()
+     .CreateBootstrapLogger();
+ 
+ try
+ {
+     var builder = WebApplication.CreateBuilder(args);
+ 
+-    // ── 2. User secrets (always — so local dev works in Production mode) ────
+-
+     builder.Configuration.AddUserSecrets<Program>(optional: true);
+-
+-    // ── 3. Static web assets (NuGet _content/ e.g. MudBlazor) ───────────────
+-
+     builder.WebHost.UseStaticWebAssets();
+ 
+-    // ── 3. Azure Key Vault in Production ─────────────────────────────────────
+-
+     if (builder.Environment.IsProduction())
+     {
+         var vaultUri = builder.Configuration["AzureKeyVault:VaultUri"];
+         if (!string.IsNullOrWhiteSpace(vaultUri))
+         {
+             builder.Configuration.AddAzureKeyVault(
+-                new Uri(vaultUri),
+-                new DefaultAzureCredential());
+-            Log.Information("Azure Key Vault configuration loaded from {Uri}", vaultUri);
++                new Uri(vaultUri), new DefaultAzureCredential());
++            Log.Information("Azure Key Vault loaded from {Uri}", vaultUri);
+         }
+         else
+         {
+-            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault in Production");
++            Log.Warning("AzureKeyVault:VaultUri not configured — skipping Key Vault");
+         }
+     }
+ 
+-    // ── 3. Serilog from appsettings ───────────────────────────────────────────
+-
+     builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+ 
+-    // ── 4. IChatClient — Ollama (Dev) / Azure OpenAI (Prod) ──────────────────
++    // ── SQL Server + Identity ────────────────────────────────────────────────
++    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
++        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
++
++    builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlServer(connStr));
++
++    builder.Services.AddIdentity<AppUser, IdentityRole>(o =>
++    {
++        o.Password.RequireDigit = false;
++        o.Password.RequireUppercase = false;
++        o.Password.RequireNonAlphanumeric = false;
++        o.Password.RequiredLength = 6;
++    })
++    .AddEntityFrameworkStores<AppDbContext>()
++    .AddDefaultTokenProviders();
++
++    builder.Services.ConfigureApplicationCookie(o =>
++    {
++        o.LoginPath = "/login";
++        o.AccessDeniedPath = "/login";
++    });
++
++    builder.Services.AddScoped<IConversationRepository, ConversationRepository>();
+ 
++    // ── IChatClient ──────────────────────────────────────────────────────────
+     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
+ 
+     builder.Services.AddSingleton<IChatClient>(_ =>
+     {
+         if (string.Equals(provider, "AzureOpenAI", StringComparison.OrdinalIgnoreCase))
+         {
+             var endpoint   = builder.Configuration["AI:AzureOpenAI:Endpoint"]
+                 ?? throw new InvalidOperationException("Missing AI:AzureOpenAI:Endpoint");
+             var deployment = builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o";
+             var apiKey     = builder.Configuration["AI:AzureOpenAI:ApiKey"];
+ 
+             var azureClient = string.IsNullOrWhiteSpace(apiKey)
+                 ? new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
+                 : new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new System.ClientModel.ApiKeyCredential(apiKey));
+ 
+             return azureClient.GetChatClient(deployment).AsIChatClient();
+         }
+ 
+-        // Default: Ollama
+         var ollamaEndpoint = builder.Configuration["AI:Ollama:Endpoint"] ?? "http://localhost:11434";
+         var model          = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
+         return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), model);
+     });
+ 
+-    // ── 5. HrAgentService — scoped per Blazor circuit ────────────────────────
+-
+     builder.Services.AddScoped<IHrAgentService>(sp =>
+     {
+         var chatClient = sp.GetRequiredService<IChatClient>();
+         var endpoint   = builder.Configuration["McpServer:Endpoint"] ?? "http://localhost:5200/mcp";
+         var logger     = sp.GetRequiredService<ILogger<HrAgentService>>();
+         return new HrAgentService(chatClient, endpoint, logger);
+     });
+ 
+-    // ── 6. Blazor + MudBlazor ─────────────────────────────────────────────────
++    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
+ 
++    // ── Blazor + MudBlazor ───────────────────────────────────────────────────
+     builder.Services.AddRazorComponents()
+         .AddInteractiveServerComponents();
+     builder.Services.AddMudServices();
++    builder.Services.AddCascadingAuthenticationState();
+ 
+     var app = builder.Build();
+ 
++    // ── Auto-migrate on startup ───────────────────────────────────────────────
++    using (var scope = app.Services.CreateScope())
++    {
++        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
++        await db.Database.MigrateAsync();
++    }
++
+     if (!app.Environment.IsDevelopment())
+     {
+         app.UseExceptionHandler("/Error");
+         app.UseHsts();
+     }
+ 
+     app.UseHttpsRedirection();
+     app.UseStaticFiles();
++    app.UseAuthentication();
++    app.UseAuthorization();
+     app.UseAntiforgery();
++
++    // ── Logout endpoint ──────────────────────────────────────────────────────
++    app.MapGet("/account/logout", async (SignInManager<AppUser> signInManager) =>
++    {
++        await signInManager.SignOutAsync();
++        return Results.LocalRedirect("/login");
++    });
++
+     app.MapRazorComponents<HrDashboard.Web.Components.App>()
+         .AddInteractiveServerRenderMode()
+         .WithStaticAssets();
+ 
+     await app.RunAsync();
+ }
+ catch (Exception ex) when (ex is not OperationCanceledException)
+ {
+     Log.Fatal(ex, "HrDashboard.Web terminated unexpectedly");
+     Environment.ExitCode = 1;
+diff --git a/src/HrDashboard.Web/Services/ChatSessionService.cs b/src/HrDashboard.Web/Services/ChatSessionService.cs
+new file mode 100644
+index 0000000..14a6baf
+--- /dev/null
++++ b/src/HrDashboard.Web/Services/ChatSessionService.cs
+@@ -0,0 +1,132 @@
++using System.Text.Json;
++using HrDashboard.Agents;
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Web.Services;
++
++public class ChatSessionService(
++    IHrAgentService agent,
++    IConversationRepository repo,
++    ILogger<ChatSessionService> logger)
++{
++    public ConversationSummary? CurrentConversation { get; private set; }
++    public List<MessageViewModel> Messages { get; } = [];
++    public bool IsStreaming { get; private set; }
++    public IReadOnlyList<HrMetricRow> CurrentMetrics { get; private set; } = [];
++    public List<ConversationSummary> Conversations { get; private set; } = [];
++
++    public event Action? OnChange;
++
++    public async Task LoadUserConversationsAsync(string userId, CancellationToken ct = default)
++    {
++        Conversations = await repo.GetByUserAsync(userId, ct);
++        Notify();
++    }
++
++    public async Task StartNewConversationAsync(string userId, CancellationToken ct = default)
++    {
++        CurrentConversation = await repo.CreateAsync(userId, "New conversation", ct);
++        Messages.Clear();
++        CurrentMetrics = [];
++        Conversations = await repo.GetByUserAsync(userId, ct);
++        Notify();
++    }
++
++    public async Task LoadConversationAsync(Guid conversationId, string userId, CancellationToken ct = default)
++    {
++        var summary = Conversations.FirstOrDefault(c => c.Id == conversationId);
++        if (summary is null) return;
++
++        CurrentConversation = summary;
++        Messages.Clear();
++        CurrentMetrics = [];
++
++        var rows = await repo.GetMessagesForDisplayAsync(conversationId, ct);
++        foreach (var row in rows)
++        {
++            var vm = new MessageViewModel
++            {
++                Role = row.Role,
++                Content = row.Content,
++                Metrics = row.MetricsJson is not null
++                    ? HrMetricParser.Parse(row.MetricsJson)
++                    : null
++            };
++            Messages.Add(vm);
++            if (row.Role == MessageRole.Assistant && vm.Metrics?.Count > 0)
++                CurrentMetrics = vm.Metrics;
++        }
++
++        Notify();
++    }
++
++    public async Task SendAsync(string prompt, string userId, CancellationToken ct = default)
++    {
++        if (IsStreaming || string.IsNullOrWhiteSpace(prompt)) return;
++
++        // Create conversation on first message
++        if (CurrentConversation is null)
++            await StartNewConversationAsync(userId, ct);
++
++        var conversationId = CurrentConversation!.Id;
++
++        // Add and persist user message
++        var userVm = MessageViewModel.FromUser(prompt);
++        Messages.Add(userVm);
++        await repo.AddMessageAsync(conversationId, MessageRole.User, prompt, ct: ct);
++
++        // Add streaming assistant placeholder
++        var assistantVm = MessageViewModel.StreamingAssistant();
++        Messages.Add(assistantVm);
++        IsStreaming = true;
++        CurrentMetrics = [];
++        Notify();
++
++        try
++        {
++            // Fetch agent context (text only — no MetricsJson)
++            var history = await repo.GetMessagesForAgentAsync(conversationId, ct);
++
++            // Stream response chunks
++            await foreach (var chunk in agent.AskStreamAsync(history, prompt, ct))
++            {
++                assistantVm.Content += chunk;
++                Notify();
++            }
++
++            // Parse metrics from completed response
++            var metrics = HrMetricParser.Parse(assistantVm.Content);
++            assistantVm.Metrics = metrics;
++            CurrentMetrics = metrics;
++
++            // Persist assistant message with MetricsJson
++            var metricsJson = metrics.Count > 0
++                ? JsonSerializer.Serialize(metrics)
++                : null;
++            await repo.AddMessageAsync(
++                conversationId, MessageRole.Assistant, assistantVm.Content, metricsJson, ct);
++
++            // Auto-title on first exchange
++            if (Messages.Count == 2 && CurrentConversation.Title == "New conversation")
++            {
++                var title = prompt.Length <= 60 ? prompt : prompt[..60];
++                await repo.UpdateTitleAsync(conversationId, title, ct);
++                CurrentConversation = CurrentConversation with { Title = title };
++                Conversations = await repo.GetByUserAsync(userId, ct);
++            }
++        }
++        catch (Exception ex) when (ex is not OperationCanceledException)
++        {
++            logger.LogError(ex, "ChatSessionService.SendAsync failed");
++            assistantVm.Content = $"[Error: {ex.Message}]";
++        }
++        finally
++        {
++            assistantVm.IsStreaming = false;
++            IsStreaming = false;
++            Notify();
++        }
++    }
++
++    private void Notify() => OnChange?.Invoke();
++}
+diff --git a/src/HrDashboard.Web/Services/MessageViewModel.cs b/src/HrDashboard.Web/Services/MessageViewModel.cs
+new file mode 100644
+index 0000000..e1c510b
+--- /dev/null
++++ b/src/HrDashboard.Web/Services/MessageViewModel.cs
+@@ -0,0 +1,23 @@
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Web.Services;
++
++public class MessageViewModel
++{
++    public MessageRole Role { get; init; }
++    public string Content { get; set; } = string.Empty;
++    public bool IsStreaming { get; set; }
++    public IReadOnlyList<HrMetricRow>? Metrics { get; set; }
++
++    public static MessageViewModel FromUser(string content) => new()
++    {
++        Role = MessageRole.User,
++        Content = content
++    };
++
++    public static MessageViewModel StreamingAssistant() => new()
++    {
++        Role = MessageRole.Assistant,
++        IsStreaming = true
++    };
++}
+diff --git a/src/HrDashboard.Web/appsettings.Development.json b/src/HrDashboard.Web/appsettings.Development.json
+index f767b72..6676b56 100644
+--- a/src/HrDashboard.Web/appsettings.Development.json
++++ b/src/HrDashboard.Web/appsettings.Development.json
+@@ -1,11 +1,14 @@
+ {
++  "ConnectionStrings": {
++    "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=HrDashboard;Trusted_Connection=True;MultipleActiveResultSets=true"
++  },
+   "Serilog": {
+     "MinimumLevel": {
+       "Default": "Debug",
+       "Override": {
+         "Microsoft.AspNetCore": "Warning",
+         "Microsoft.EntityFrameworkCore": "Warning"
+       }
+     }
+   },
+   "AI": {
+diff --git a/src/HrDashboard.Web/wwwroot/app.css b/src/HrDashboard.Web/wwwroot/app.css
+index 43376d2..bfdae72 100644
+--- a/src/HrDashboard.Web/wwwroot/app.css
++++ b/src/HrDashboard.Web/wwwroot/app.css
+@@ -1,3 +1,148 @@
+ html, body {
+-    font-family: 'Roboto', sans-serif;
++    height: 100%;
++    margin: 0;
++    overflow: hidden;
++}
++
++/* Three-panel shell */
++.hr-shell {
++    display: flex;
++    height: 100vh;
++    overflow: hidden;
++}
++
++/* Left panel */
++.hr-left {
++    width: 260px;
++    min-width: 260px;
++    display: flex;
++    flex-direction: column;
++    border-right: 1px solid rgba(0,0,0,0.12);
++    background: var(--mud-palette-surface);
++    transition: width 0.2s ease, min-width 0.2s ease;
++    overflow: hidden;
++}
++
++.hr-left.collapsed {
++    width: 0;
++    min-width: 0;
++}
++
++/* Center panel */
++.hr-center {
++    flex: 1;
++    display: flex;
++    flex-direction: column;
++    overflow: hidden;
++    min-width: 0;
++}
++
++.hr-messages {
++    flex: 1;
++    overflow-y: auto;
++    padding: 16px;
++    display: flex;
++    flex-direction: column;
++    gap: 12px;
++}
++
++.hr-prompt-bar {
++    border-top: 1px solid rgba(0,0,0,0.12);
++    padding: 12px 16px;
++    background: var(--mud-palette-surface);
++}
++
++/* Right panel */
++.hr-right {
++    width: 360px;
++    min-width: 360px;
++    display: flex;
++    flex-direction: column;
++    border-left: 1px solid rgba(0,0,0,0.12);
++    background: var(--mud-palette-surface);
++    transition: width 0.2s ease, min-width 0.2s ease;
++    overflow: hidden;
++}
++
++.hr-right.collapsed {
++    width: 0;
++    min-width: 0;
++}
++
++.hr-right-content {
++    flex: 1;
++    overflow-y: auto;
++    padding: 16px;
++}
++
++/* Message bubbles */
++.msg-user {
++    align-self: flex-end;
++    background: var(--mud-palette-primary);
++    color: var(--mud-palette-primary-text);
++    border-radius: 18px 18px 4px 18px;
++    padding: 10px 16px;
++    max-width: 70%;
++    word-break: break-word;
++}
++
++.msg-assistant {
++    align-self: flex-start;
++    background: var(--mud-palette-background-grey);
++    border-radius: 18px 18px 18px 4px;
++    padding: 10px 16px;
++    max-width: 80%;
++    word-break: break-word;
++    white-space: pre-wrap;
++}
++
++.msg-streaming::after {
++    content: '▋';
++    animation: blink 1s step-end infinite;
++    margin-left: 2px;
++}
++
++@keyframes blink {
++    50% { opacity: 0; }
++}
++
++/* Auth pages */
++.auth-container {
++    display: flex;
++    align-items: center;
++    justify-content: center;
++    min-height: 100vh;
++    background: var(--mud-palette-background-grey);
++}
++
++.auth-card {
++    width: 100%;
++    max-width: 420px;
++}
++
++/* Conversation list */
++.conv-list {
++    flex: 1;
++    overflow-y: auto;
++}
++
++.conv-item {
++    padding: 8px 12px;
++    cursor: pointer;
++    border-radius: 8px;
++    margin: 2px 8px;
++    transition: background 0.15s;
++}
++
++.conv-item:hover {
++    background: rgba(0,0,0,0.06);
++}
++
++.conv-item.active {
++    background: var(--mud-palette-primary-lighten);
++}
++
++.conv-profile {
++    padding: 12px;
++    border-top: 1px solid rgba(0,0,0,0.12);
+ }

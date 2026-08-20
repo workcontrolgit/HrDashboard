@@ -1,0 +1,54 @@
+@page "/register"
+
+<PageTitle>Register — HR Analytics</PageTitle>
+
+<div class="auth-container">
+    <MudPaper Class="auth-card pa-8" Elevation="3">
+        <MudText Typo="Typo.h5" Class="mb-1">Create account</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">HR Analytics Portal</MudText>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+        }
+
+        <form method="post" action="/account/register-action">
+            <AntiforgeryToken />
+            <input type="hidden" name="email"    value="@_email" />
+            <input type="hidden" name="password" value="@_password" />
+            <input type="hidden" name="confirm"  value="@_confirm" />
+
+            <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
+                          InputType="InputType.Email" Class="mb-3" FullWidth="true" />
+            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Class="mb-3" FullWidth="true" />
+            <MudTextField @bind-Value="_confirm" Label="Confirm password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                       Color="Color.Primary" FullWidth="true">
+                Register
+            </MudButton>
+        </form>
+
+        <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
+            Already have an account? <MudLink Href="/login">Sign in</MudLink>
+        </MudText>
+    </MudPaper>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] private string? ErrorMsg { get; set; }
+    [SupplyParameterFromQuery(Name = "email")] private string? EmailParam { get; set; }
+
+    private string _email    = string.Empty;
+    private string _password = string.Empty;
+    private string _confirm  = string.Empty;
+    private string _error    = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _email = EmailParam ?? string.Empty;
+        _error = ErrorMsg  ?? string.Empty;
+    }
+}

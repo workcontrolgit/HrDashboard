@@ -1,0 +1,238 @@
+diff --git a/src/HrDashboard.Web/Components/Pages/Dashboard.razor b/src/HrDashboard.Web/Components/Pages/Dashboard.razor
+index b9aa34c..0f74eff 100644
+--- a/src/HrDashboard.Web/Components/Pages/Dashboard.razor
++++ b/src/HrDashboard.Web/Components/Pages/Dashboard.razor
+@@ -1,199 +1,9 @@
+ @page "/"
+-@using HrDashboard.Agents
+-@using HrDashboard.Agents.Models
+-@using MudBlazor
+-@inject IHrAgentService Agent
+-@inject ILogger<Dashboard> Logger
++@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+ 
+-<PageTitle>HR Analytics Portal</PageTitle>
++<PageTitle>HR Analytics</PageTitle>
+ 
+-<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="py-6">
+-
+-    <MudText Typo="Typo.h4" Class="mb-2">AI HR Executive Analytics</MudText>
+-    <MudText Typo="Typo.body2" Class="mb-6" Color="Color.Secondary">
+-        Ask any HR analytics question in natural language. The AI agent queries Oracle HR data and returns structured results.
+-    </MudText>
+-
+-    <!-- Prompt input -->
+-    <MudPaper Elevation="2" Class="pa-4 mb-4">
+-        <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
+-            <MudTextField @bind-Value="_prompt"
+-                          Label="HR Analytics Query"
+-                          Placeholder="e.g. Show me average salary by department"
+-                          Variant="Variant.Outlined"
+-                          FullWidth="true"
+-                          Lines="2"
+-                          Disabled="_loading"
+-                          OnKeyDown="HandleKeyDown" />
+-            <MudButton Variant="Variant.Filled"
+-                       Color="Color.Primary"
+-                       Size="Size.Large"
+-                       OnClick="SubmitAsync"
+-                       Disabled="_loading || string.IsNullOrWhiteSpace(_prompt)"
+-                       Style="min-width:120px">
+-                @if (_loading)
+-                {
+-                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+-                }
+-                else
+-                {
+-                    <span>Analyze</span>
+-                }
+-            </MudButton>
+-        </MudStack>
+-
+-        <!-- Preset chips -->
+-        <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-3" Spacing="1">
+-            @foreach (var preset in _presets)
+-            {
+-                <MudChip T="string" OnClick="() => SelectPreset(preset)" Color="Color.Default" Size="Size.Small">@preset</MudChip>
+-            }
+-        </MudStack>
+-    </MudPaper>
+-
+-    @if (_loading)
+-    {
+-        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+-    }
+-
+-    @if (_error is not null)
+-    {
+-        <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _error = null">
+-            @_error
+-        </MudAlert>
+-    }
+-
+-    @if (_metrics.Count > 0)
+-    {
+-        <!-- Chart -->
+-        <MudPaper Elevation="2" Class="pa-4 mb-4">
+-            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+-                <MudText Typo="Typo.h6">Visualization</MudText>
+-                <MudSelect T="ChartType" @bind-Value="_chartType" Label="Chart Type" Variant="Variant.Outlined" Style="width:160px">
+-                    <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
+-                    <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
+-                    <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
+-                </MudSelect>
+-            </MudStack>
+-            <MudChart ChartType="_chartType"
+-                      ChartSeries="@_chartSeries"
+-                      XAxisLabels="@_chartLabels"
+-                      Width="100%"
+-                      Height="300px" />
+-        </MudPaper>
+-
+-        <!-- Data grid -->
+-        <MudPaper Elevation="2" Class="pa-4 mb-4">
+-            <MudText Typo="Typo.h6" Class="mb-3">Results (@_metrics.Count rows)</MudText>
+-            <MudDataGrid T="HrMetricRow"
+-                         Items="_metrics"
+-                         Dense="true"
+-                         Striped="true"
+-                         Hover="true"
+-                         Filterable="true"
+-                         SortMode="SortMode.Multiple">
+-                <Columns>
+-                    <PropertyColumn Property="r => r.Label"    Title="Label"    Sortable="true" />
+-                    <PropertyColumn Property="r => r.Value"    Title="Value"    Sortable="true" Format="N2" />
+-                    <PropertyColumn Property="r => r.Category" Title="Category" Sortable="true" />
+-                </Columns>
+-            </MudDataGrid>
+-        </MudPaper>
+-
+-        <!-- Raw LLM response -->
+-        <MudExpansionPanels>
+-            <MudExpansionPanel Text="Raw agent response">
+-                <MudText Style="white-space:pre-wrap;font-family:monospace;font-size:0.8rem">@_rawText</MudText>
+-            </MudExpansionPanel>
+-        </MudExpansionPanels>
+-    }
+-
+-    @if (!string.IsNullOrWhiteSpace(_rawText) && _metrics.Count == 0)
+-    {
+-        <MudPaper Elevation="2" Class="pa-4">
+-            <MudText Style="white-space:pre-wrap">@_rawText</MudText>
+-        </MudPaper>
+-    }
+-
+-</MudContainer>
+-
+-@code {
+-    private string _prompt = string.Empty;
+-    private bool _loading;
+-    private string? _error;
+-    private string _rawText = string.Empty;
+-    private List<HrMetricRow> _metrics = [];
+-    private ChartType _chartType = ChartType.Bar;
+-
+-    private List<ChartSeries> _chartSeries = [];
+-    private string[] _chartLabels = [];
+-
+-    private readonly string[] _presets =
+-    [
+-        "Average salary by department",
+-        "Top 10 highest-paid employees",
+-        "Headcount per department",
+-        "Job salary ranges",
+-        "Departments with more than 5 employees"
+-    ];
+-
+-    private void SelectPreset(string preset)
+-    {
+-        _prompt = preset;
+-    }
+-
+-    private async Task HandleKeyDown(KeyboardEventArgs e)
+-    {
+-        if (e.Key == "Enter" && e.CtrlKey)
+-            await SubmitAsync();
+-    }
+-
+-    private async Task SubmitAsync()
+-    {
+-        if (string.IsNullOrWhiteSpace(_prompt) || _loading) return;
+-
+-        _loading = true;
+-        _error   = null;
+-        _metrics = [];
+-        _chartSeries = [];
+-        _chartLabels = [];
+-        _rawText = string.Empty;
+-
+-        try
+-        {
+-            Logger.LogInformation("Dashboard submitting prompt: {Prompt}", _prompt);
+-            var (raw, metrics) = await Agent.AskAsync(_prompt);
+-            _rawText = raw;
+-            _metrics = [.. metrics];
+-            BuildChart();
+-            Logger.LogInformation("Dashboard received {Count} metric rows", _metrics.Count);
+-        }
+-        catch (Exception ex)
+-        {
+-            Logger.LogError(ex, "Agent call failed for prompt: {Prompt}", _prompt);
+-            _error = $"Agent error: {ex.Message}";
+-        }
+-        finally
+-        {
+-            _loading = false;
+-        }
+-    }
+-
+-    private void BuildChart()
+-    {
+-        if (_metrics.Count == 0) return;
+-
+-        _chartLabels = _metrics.Select(r => Truncate(r.Label, 18)).ToArray();
+-        _chartSeries =
+-        [
+-            new ChartSeries
+-            {
+-                Name = "Value",
+-                Data = _metrics.Select(r => r.Value).ToArray()
+-            }
+-        ];
+-    }
+-
+-    private static string Truncate(string s, int max) =>
+-        s.Length <= max ? s : s[..max] + "…";
+-}
++<div style="display:flex;flex-direction:column;height:100%">
++    <ChatThread />
++    <PromptBar />
++</div>
+diff --git a/src/HrDashboard.Web/Program.cs b/src/HrDashboard.Web/Program.cs
+index b0e801f..6209e35 100644
+--- a/src/HrDashboard.Web/Program.cs
++++ b/src/HrDashboard.Web/Program.cs
+@@ -86,22 +86,21 @@ try
+     });
+ 
+     builder.Services.AddScoped<IHrAgentService>(sp =>
+     {
+         var chatClient = sp.GetRequiredService<IChatClient>();
+         var endpoint   = builder.Configuration["McpServer:Endpoint"] ?? "http://localhost:5200/mcp";
+         var logger     = sp.GetRequiredService<ILogger<HrAgentService>>();
+         return new HrAgentService(chatClient, endpoint, logger);
+     });
+ 
+-    // ChatSessionService registered in Task 13
+-    // builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
++    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
+ 
+     // ── Blazor + MudBlazor ───────────────────────────────────────────────────
+     builder.Services.AddRazorComponents()
+         .AddInteractiveServerComponents();
+     builder.Services.AddMudServices();
+     builder.Services.AddCascadingAuthenticationState();
+ 
+     var app = builder.Build();
+ 
+     // ── Auto-migrate on startup ───────────────────────────────────────────────

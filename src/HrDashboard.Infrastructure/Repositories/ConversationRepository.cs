@@ -1,0 +1,81 @@
+using HrDashboard.Agents;
+using HrDashboard.Agents.Models;
+using HrDashboard.Infrastructure.Entities;
+using Microsoft.EntityFrameworkCore;
+
+namespace HrDashboard.Infrastructure.Repositories;
+
+public class ConversationRepository(IDbContextFactory<AppDbContext> dbFactory) : IConversationRepository
+{
+    public async Task<List<ConversationSummary>> GetByUserAsync(
+        string userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Conversations
+            .Where(c => c.UserId == userId)
+            .OrderByDescending(c => c.CreatedAt)
+            .Select(c => new ConversationSummary(c.Id, c.Title, c.CreatedAt))
+            .ToListAsync(ct);
+    }
+
+    public async Task<ConversationSummary> CreateAsync(
+        string userId, string title, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var conv = new Conversation { UserId = userId, Title = title };
+        db.Conversations.Add(conv);
+        await db.SaveChangesAsync(ct);
+        return new ConversationSummary(conv.Id, conv.Title, conv.CreatedAt);
+    }
+
+    public async Task UpdateTitleAsync(
+        Guid conversationId, string title, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await db.Conversations
+            .Where(c => c.Id == conversationId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Title, title), ct);
+    }
+
+    public async Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
+        Guid conversationId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Messages
+            .Where(m => m.ConversationId == conversationId)
+            .OrderBy(m => m.CreatedAt)
+            .Select(m => new ValueTuple<MessageRole, string>(m.Role, m.Content))
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<MessageDisplay>> GetMessagesForDisplayAsync(
+        Guid conversationId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Messages
+            .Where(m => m.ConversationId == conversationId)
+            .OrderBy(m => m.CreatedAt)
+            .Select(m => new MessageDisplay(m.Id, m.Role, m.Content, m.MetricsJson, m.CreatedAt))
+            .ToListAsync(ct);
+    }
+
+    public async Task<MessageDisplay> AddMessageAsync(
+        Guid conversationId,
+        MessageRole role,
+        string content,
+        string? metricsJson = null,
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var msg = new Message
+        {
+            ConversationId = conversationId,
+            Role = role,
+            Content = content,
+            MetricsJson = metricsJson
+        };
+        db.Messages.Add(msg);
+        await db.SaveChangesAsync(ct);
+        return new MessageDisplay(msg.Id, msg.Role, msg.Content, msg.MetricsJson, msg.CreatedAt);
+    }
+}

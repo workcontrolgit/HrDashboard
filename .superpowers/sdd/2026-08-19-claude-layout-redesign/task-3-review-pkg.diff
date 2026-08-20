@@ -1,0 +1,123 @@
+diff --git a/HrDashboard.slnx b/HrDashboard.slnx
+index 1cbc0d5..bab5abb 100644
+--- a/HrDashboard.slnx
++++ b/HrDashboard.slnx
+@@ -1,7 +1,8 @@
+ <Solution>
+   <Folder Name="/src/">
+     <Project Path="src/HrDashboard.Agents/HrDashboard.Agents.csproj" />
++    <Project Path="src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj" />
+     <Project Path="src/HrDashboard.McpServer/HrDashboard.McpServer.csproj" />
+     <Project Path="src/HrDashboard.Web/HrDashboard.Web.csproj" />
+   </Folder>
+ </Solution>
+diff --git a/src/HrDashboard.Infrastructure/AppDbContext.cs b/src/HrDashboard.Infrastructure/AppDbContext.cs
+new file mode 100644
+index 0000000..b31664b
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/AppDbContext.cs
+@@ -0,0 +1,36 @@
++using HrDashboard.Infrastructure.Entities;
++using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore;
++
++namespace HrDashboard.Infrastructure;
++
++public class AppDbContext(DbContextOptions<AppDbContext> options)
++    : IdentityDbContext<AppUser>(options)
++{
++    public DbSet<Conversation> Conversations => Set<Conversation>();
++    public DbSet<Message> Messages => Set<Message>();
++
++    protected override void OnModelCreating(ModelBuilder builder)
++    {
++        base.OnModelCreating(builder);
++
++        builder.Entity<Conversation>(e =>
++        {
++            e.HasKey(c => c.Id);
++            e.Property(c => c.UserId).HasMaxLength(450).IsRequired();
++            e.Property(c => c.Title).HasMaxLength(512);
++            e.HasMany(c => c.Messages)
++             .WithOne(m => m.Conversation)
++             .HasForeignKey(m => m.ConversationId)
++             .OnDelete(DeleteBehavior.Cascade);
++            e.HasIndex(c => c.UserId);
++        });
++
++        builder.Entity<Message>(e =>
++        {
++            e.HasKey(m => m.Id);
++            e.Property(m => m.Content).IsRequired();
++            e.Property(m => m.Role).HasConversion<string>();
++        });
++    }
++}
+diff --git a/src/HrDashboard.Infrastructure/AppUser.cs b/src/HrDashboard.Infrastructure/AppUser.cs
+new file mode 100644
+index 0000000..89454e9
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/AppUser.cs
+@@ -0,0 +1,5 @@
++using Microsoft.AspNetCore.Identity;
++
++namespace HrDashboard.Infrastructure;
++
++public class AppUser : IdentityUser { }
+diff --git a/src/HrDashboard.Infrastructure/Entities/Conversation.cs b/src/HrDashboard.Infrastructure/Entities/Conversation.cs
+new file mode 100644
+index 0000000..22a6fac
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Entities/Conversation.cs
+@@ -0,0 +1,10 @@
++namespace HrDashboard.Infrastructure.Entities;
++
++public class Conversation
++{
++    public Guid Id { get; set; } = Guid.NewGuid();
++    public string UserId { get; set; } = string.Empty;
++    public string Title { get; set; } = "New conversation";
++    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
++    public ICollection<Message> Messages { get; set; } = [];
++}
+diff --git a/src/HrDashboard.Infrastructure/Entities/Message.cs b/src/HrDashboard.Infrastructure/Entities/Message.cs
+new file mode 100644
+index 0000000..a8bf15c
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/Entities/Message.cs
+@@ -0,0 +1,15 @@
++using HrDashboard.Agents.Models;
++
++namespace HrDashboard.Infrastructure.Entities;
++
++public class Message
++{
++    public Guid Id { get; set; } = Guid.NewGuid();
++    public Guid ConversationId { get; set; }
++    public Conversation Conversation { get; set; } = null!;
++    public MessageRole Role { get; set; }
++    public string Content { get; set; } = string.Empty;
++    /// <summary>Serialized List&lt;HrMetricRow&gt;. Display only — never sent to agent.</summary>
++    public string? MetricsJson { get; set; }
++    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
++}
+diff --git a/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj b/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj
+new file mode 100644
+index 0000000..b940a4b
+--- /dev/null
++++ b/src/HrDashboard.Infrastructure/HrDashboard.Infrastructure.csproj
+@@ -0,0 +1,14 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <TargetFramework>net10.0</TargetFramework>
++    <Nullable>enable</Nullable>
++    <ImplicitUsings>enable</ImplicitUsings>
++  </PropertyGroup>
++  <ItemGroup>
++    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.*" />
++    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.*" />
++  </ItemGroup>
++  <ItemGroup>
++    <ProjectReference Include="..\HrDashboard.Agents\HrDashboard.Agents.csproj" />
++  </ItemGroup>
++</Project>

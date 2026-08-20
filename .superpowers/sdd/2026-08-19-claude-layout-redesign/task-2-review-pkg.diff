@@ -1,0 +1,121 @@
+diff --git a/src/HrDashboard.Agents/HrAgentService.cs b/src/HrDashboard.Agents/HrAgentService.cs
+index 17c1bf1..7aafe2e 100644
+--- a/src/HrDashboard.Agents/HrAgentService.cs
++++ b/src/HrDashboard.Agents/HrAgentService.cs
+@@ -108,20 +108,90 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
+ 
+                 messages.Add(new ChatMessage(ChatRole.Tool,
+                     [new FunctionResultContent(call.CallId, result)]));
+             }
+         }
+ 
+         _logger.LogWarning("Agent hit iteration limit for prompt: {Prompt}", prompt);
+         return ("[Agent reached iteration limit — rephrase your query]", []);
+     }
+ 
++    private List<ChatMessage> BuildMessages(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt)
++    {
++        var messages = new List<ChatMessage> { new(ChatRole.System, SystemPrompt) };
++        foreach (var (role, content) in history)
++        {
++            var chatRole = role == MessageRole.User ? ChatRole.User : ChatRole.Assistant;
++            messages.Add(new ChatMessage(chatRole, content));
++        }
++        messages.Add(new ChatMessage(ChatRole.User, prompt));
++        return messages;
++    }
++
++    public async IAsyncEnumerable<string> AskStreamAsync(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt,
++        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
++    {
++        await EnsureInitializedAsync(ct);
++
++        _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
++
++        var toolOptions = new ChatOptions { Tools = [.. _tools] };
++        var messages = BuildMessages(history, prompt);
++
++        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data
++        for (int i = 0; i < MaxIterations; i++)
++        {
++            var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
++            foreach (var msg in response.Messages)
++                messages.Add(msg);
++
++            var calls = response.Messages
++                .SelectMany(m => m.Contents)
++                .OfType<FunctionCallContent>()
++                .ToList();
++
++            if (calls.Count == 0)
++            {
++                // Model answered without tool calls — yield full text as single chunk
++                _logger.LogInformation("Agent streaming completed in {Iterations} iteration(s)", i + 1);
++                yield return response.Text ?? string.Empty;
++                yield break;
++            }
++
++            if (i == MaxIterations - 1)
++            {
++                _logger.LogWarning("Agent streaming hit iteration limit for prompt: {Prompt}", prompt);
++                yield return "[Agent reached iteration limit — rephrase your query]";
++                yield break;
++            }
++
++            foreach (var call in calls)
++            {
++                _logger.LogDebug("Tool call: {Tool}", call.Name);
++                var result = await InvokeToolAsync(call, ct);
++                messages.Add(new ChatMessage(ChatRole.Tool,
++                    [new FunctionResultContent(call.CallId, result)]));
++            }
++        }
++
++        // Phase 2: tool data gathered — stream the final summarization
++        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
++        {
++            if (!string.IsNullOrEmpty(update.Text))
++                yield return update.Text;
++        }
++    }
++
+     private async Task<object?> InvokeToolAsync(FunctionCallContent call, CancellationToken ct)
+     {
+         var fn = _tools.OfType<AIFunction>()
+             .FirstOrDefault(t => string.Equals(t.Name, call.Name, StringComparison.OrdinalIgnoreCase));
+ 
+         if (fn is null)
+         {
+             _logger.LogWarning("Tool not found: {Name}", call.Name);
+             return $"[Tool '{call.Name}' not found]";
+         }
+diff --git a/src/HrDashboard.Agents/IHrAgentService.cs b/src/HrDashboard.Agents/IHrAgentService.cs
+index 9d70133..f651609 100644
+--- a/src/HrDashboard.Agents/IHrAgentService.cs
++++ b/src/HrDashboard.Agents/IHrAgentService.cs
+@@ -3,11 +3,21 @@ using HrDashboard.Agents.Models;
+ namespace HrDashboard.Agents;
+ 
+ public interface IHrAgentService
+ {
+     /// <summary>
+     /// Submits a natural language HR analytics query and returns structured metric rows.
+     /// </summary>
+     Task<(string RawText, IReadOnlyList<HrMetricRow> Metrics)> AskAsync(
+         string prompt,
+         CancellationToken ct = default);
++
++    /// <summary>
++    /// Streams the AI response chunk by chunk. Runs the tool-use loop internally
++    /// (non-streaming), then yields the final text as it arrives.
++    /// history = prior (Role, Content) pairs for context — MetricsJson is never included.
++    /// </summary>
++    IAsyncEnumerable<string> AskStreamAsync(
++        IEnumerable<(MessageRole Role, string Content)> history,
++        string prompt,
++        CancellationToken ct = default);
+ }

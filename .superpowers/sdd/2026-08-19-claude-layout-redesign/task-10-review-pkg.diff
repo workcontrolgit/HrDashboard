@@ -1,0 +1,105 @@
+diff --git a/src/HrDashboard.Web/Components/Layout/ConversationList.razor b/src/HrDashboard.Web/Components/Layout/ConversationList.razor
+new file mode 100644
+index 0000000..ed3b253
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Layout/ConversationList.razor
+@@ -0,0 +1,71 @@
++@inject ChatSessionService Session
++@inject AuthenticationStateProvider AuthStateProvider
++@implements IDisposable
++
++<div style="display:flex;flex-direction:column;height:100%">
++
++    <div class="conv-list">
++        @if (Session.Conversations.Count == 0)
++        {
++            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="pa-3">
++                No conversations yet. Start one below.
++            </MudText>
++        }
++        @foreach (var conv in Session.Conversations)
++        {
++            var isActive = Session.CurrentConversation?.Id == conv.Id;
++            <div class="conv-item @(isActive ? "active" : "")"
++                 @onclick="() => SelectConversationAsync(conv.Id)">
++                <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
++                    @conv.Title
++                </MudText>
++                <MudText Typo="Typo.caption" Color="Color.Secondary">
++                    @conv.CreatedAt.ToLocalTime().ToString("MMM d")
++                </MudText>
++            </div>
++        }
++    </div>
++
++    <div class="conv-profile">
++        <AuthorizeView>
++            <Authorized>
++                <div style="display:flex;align-items:center;gap:8px">
++                    <MudIcon Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Secondary" />
++                    <MudText Typo="Typo.body2" Style="flex:1;overflow:hidden;text-overflow:ellipsis">
++                        @context.User.Identity?.Name
++                    </MudText>
++                    <MudIconButton Icon="@Icons.Material.Filled.Logout"
++                                   Size="Size.Small"
++                                   Href="/account/logout"
++                                   Title="Sign out" />
++                </div>
++            </Authorized>
++        </AuthorizeView>
++    </div>
++
++</div>
++
++@code {
++    [Parameter] public EventCallback OnNewChat { get; set; }
++
++    private string? _userId;
++
++    protected override async Task OnInitializedAsync()
++    {
++        Session.OnChange += StateHasChanged;
++        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
++        _userId = auth.User.FindFirst(
++            System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
++
++        if (_userId is not null)
++            await Session.LoadUserConversationsAsync(_userId);
++    }
++
++    private async Task SelectConversationAsync(Guid id)
++    {
++        if (_userId is null) return;
++        await Session.LoadConversationAsync(id, _userId);
++    }
++
++    public void Dispose() => Session.OnChange -= StateHasChanged;
++}
+diff --git a/src/HrDashboard.Web/Components/Layout/MainLayout.razor b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+index 9c3a3a7..88f4962 100644
+--- a/src/HrDashboard.Web/Components/Layout/MainLayout.razor
++++ b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+@@ -14,22 +14,21 @@
+             <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                            Size="Size.Small"
+                            OnClick="() => _leftOpen = !_leftOpen"
+                            Title="Toggle sidebar" />
+             <MudIconButton Icon="@Icons.Material.Filled.Add"
+                            Size="Size.Small"
+                            Color="Color.Primary"
+                            OnClick="NewChat"
+                            Title="New conversation" />
+         </div>
+-        @* TODO Task 10: uncomment when ConversationList is created *@
+-        @* <ConversationList OnNewChat="NewChat" /> *@
++        <ConversationList OnNewChat="NewChat" />
+     </div>
+ 
+     <!-- Center panel -->
+     <div class="hr-center">
+         <div style="display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid rgba(0,0,0,0.12);gap:8px">
+             @if (!_leftOpen)
+             {
+                 <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                                Size="Size.Small"
+                                OnClick="() => _leftOpen = true"
