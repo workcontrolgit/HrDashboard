@@ -140,13 +140,13 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
         var toolOptions = new ChatOptions { Tools = [.. _tools] };
         var messages = BuildMessages(history, prompt);
+        bool toolsWereUsed = false;
 
-        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data
+        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data.
+        // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
         for (int i = 0; i < MaxIterations; i++)
         {
             var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
-            foreach (var msg in response.Messages)
-                messages.Add(msg);
 
             var calls = response.Messages
                 .SelectMany(m => m.Contents)
@@ -155,11 +155,20 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
             if (calls.Count == 0)
             {
-                // Model answered without tool calls — yield full text as single chunk
-                _logger.LogInformation("Agent streaming completed in {Iterations} iteration(s)", i + 1);
-                yield return response.Text ?? string.Empty;
-                yield break;
+                if (!toolsWereUsed)
+                {
+                    // Model answered without any tool calls — yield text directly (no extra API call)
+                    _logger.LogInformation("Agent streaming (no tools) completed in 1 round");
+                    yield return response.Text ?? string.Empty;
+                    yield break;
+                }
+
+                // Tool data is in messages; fall through to Phase 2 for streaming final answer
+                _logger.LogInformation("Agent tool-use loop done after {Rounds} round(s), streaming final answer", i);
+                break;
             }
+
+            toolsWereUsed = true;
 
             if (i == MaxIterations - 1)
             {
@@ -167,6 +176,10 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 yield return "[Agent reached iteration limit — rephrase your query]";
                 yield break;
             }
+
+            // Add tool-call messages and results; final answer is never added here
+            foreach (var msg in response.Messages)
+                messages.Add(msg);
 
             foreach (var call in calls)
             {
@@ -177,7 +190,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             }
         }
 
-        // Phase 2: tool data gathered — stream the final summarization
+        // Phase 2: stream the final summarization over the accumulated tool context
         await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
         {
             if (!string.IsNullOrEmpty(update.Text))

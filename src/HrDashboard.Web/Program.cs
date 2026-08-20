@@ -123,11 +123,11 @@ try
     app.UseAntiforgery();
 
     // ── Logout endpoint ──────────────────────────────────────────────────────
-    app.MapGet("/account/logout", async (SignInManager<AppUser> signInManager) =>
+    app.MapPost("/account/logout", async (SignInManager<AppUser> signInManager) =>
     {
         await signInManager.SignOutAsync();
         return Results.LocalRedirect("/login");
-    });
+    }).RequireAuthorization();
 
     app.MapRazorComponents<HrDashboard.Web.Components.App>()
         .AddInteractiveServerRenderMode()

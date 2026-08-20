@@ -34,10 +34,13 @@
                     <MudText Typo="Typo.body2" Style="flex:1;overflow:hidden;text-overflow:ellipsis">
                         @context.User.Identity?.Name
                     </MudText>
-                    <MudIconButton Icon="@Icons.Material.Filled.Logout"
-                                   Size="Size.Small"
-                                   Href="/account/logout"
-                                   Title="Sign out" />
+                    <form method="post" action="/account/logout">
+                        <AntiforgeryToken />
+                        <MudIconButton ButtonType="ButtonType.Submit"
+                                       Icon="@Icons.Material.Filled.Logout"
+                                       Size="Size.Small"
+                                       Title="Sign out" />
+                    </form>
                 </div>
             </Authorized>
         </AuthorizeView>

@@ -49,7 +49,7 @@ public class ChatSessionService(
                 Role = row.Role,
                 Content = row.Content,
                 Metrics = row.MetricsJson is not null
-                    ? HrMetricParser.Parse(row.MetricsJson)
+                    ? JsonSerializer.Deserialize<List<HrMetricRow>>(row.MetricsJson) ?? []
                     : null
             };
             Messages.Add(vm);
