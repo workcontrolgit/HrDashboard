@@ -125,11 +125,35 @@ Run the test projects included in the solution:
 dotnet test .\HrDashboard.slnx
 ```
 
+Note: the E2E project below has extra local prerequisites (SQL Server LocalDB, Chromium) — see the "Web end-to-end tests" section further down before running the full solution suite if you haven't set those up.
+
 To run the MCP tests directly:
 
 ```powershell
 dotnet test .\tests\HrDashboard.McpServer.Tests
 ```
+
+To run the Web end-to-end tests (requires SQL Server LocalDB; starts and stops `HrDashboard.Web` automatically):
+
+```powershell
+dotnet test .\tests\HrDashboard.Web.E2E.Tests
+```
+
+Note: 3 of the 4 tests in this project are currently tagged `[Ignore]`, pending a tracked application bug (bug-023 in `.wolf/buglog.json`) unrelated to the test infrastructure — a run reporting "Skipped: 3" is expected, not a sign anything is broken in your setup.
+
+To run the other test projects without the E2E project's extra prerequisites (LocalDB, Chromium):
+
+```powershell
+dotnet test --filter "Category!=E2E"
+```
+
+One-time setup, after the first build, to download the Chromium browser Playwright drives:
+
+```powershell
+pwsh .\tests\HrDashboard.Web.E2E.Tests\bin\Debug\net10.0\playwright.ps1 install chromium
+```
+
+If E2E tests start failing after a `dotnet restore` or package update with an error about a Playwright driver/browser version mismatch, re-run the `playwright.ps1 install chromium` command above — this project's package versions float (`Version="1.*"`, matching house style), so a version bump can invalidate the previously-installed browser binaries.
 
 ## Logs
 
