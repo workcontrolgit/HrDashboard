@@ -1,8 +1,18 @@
-obj/
-bin/
-logs/
-*.user
+# .NET build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+
+# Visual Studio and IDE state
 .vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local application output
+logs/
 .claude/
 .codegraph/
 .wolf/
