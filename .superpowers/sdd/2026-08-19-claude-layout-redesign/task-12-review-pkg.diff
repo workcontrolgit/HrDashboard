@@ -1,0 +1,143 @@
+diff --git a/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor b/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor
+new file mode 100644
+index 0000000..f56ebd7
+--- /dev/null
++++ b/src/HrDashboard.Web/Components/Chat/ResultsPanel.razor
+@@ -0,0 +1,88 @@
++@inject ChatSessionService Session
++@implements IDisposable
++
++@if (Session.CurrentMetrics.Count == 0)
++{
++    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;opacity:0.4">
++        <MudIcon Icon="@Icons.Material.Filled.BarChart" Style="font-size:48px" />
++        <MudText Typo="Typo.body2" Class="mt-2">Results appear here</MudText>
++    </div>
++}
++else
++{
++    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
++        <MudText Typo="Typo.subtitle2">Visualization</MudText>
++        <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
++                   Variant="Variant.Outlined" Style="width:130px">
++            <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
++            <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
++            <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
++        </MudSelect>
++    </MudStack>
++
++    <MudChart ChartType="_chartType"
++              ChartSeries="@_chartSeries"
++              XAxisLabels="@_chartLabels"
++              Width="100%"
++              Height="220px"
++              Class="mb-4" />
++
++    <MudText Typo="Typo.subtitle2" Class="mb-2">
++        Data (@Session.CurrentMetrics.Count rows)
++    </MudText>
++    <MudDataGrid T="HrMetricRow"
++                 Items="Session.CurrentMetrics"
++                 Dense="true"
++                 Striped="true"
++                 Hover="true"
++                 Filterable="false"
++                 SortMode="SortMode.Single">
++        <Columns>
++            <PropertyColumn Property="r => r.Label"    Title="Label"    Sortable="true" />
++            <PropertyColumn Property="r => r.Value"    Title="Value"    Sortable="true" Format="N2" />
++            <PropertyColumn Property="r => r.Category" Title="Category" Sortable="true" />
++        </Columns>
++    </MudDataGrid>
++}
++
++@code {
++    private ChartType _chartType = ChartType.Bar;
++    private List<ChartSeries> _chartSeries = [];
++    private string[] _chartLabels = [];
++
++    protected override void OnInitialized()
++    {
++        Session.OnChange += OnSessionChange;
++    }
++
++    private void OnSessionChange()
++    {
++        BuildChart();
++        InvokeAsync(StateHasChanged);
++    }
++
++    private void BuildChart()
++    {
++        if (Session.CurrentMetrics.Count == 0)
++        {
++            _chartSeries = [];
++            _chartLabels = [];
++            return;
++        }
++
++        _chartLabels = Session.CurrentMetrics
++            .Select(r => r.Label.Length <= 18 ? r.Label : r.Label[..18] + "…")
++            .ToArray();
++
++        _chartSeries =
++        [
++            new ChartSeries
++            {
++                Name = "Value",
++                Data = Session.CurrentMetrics.Select(r => r.Value).ToArray()
++            }
++        ];
++    }
++
++    public void Dispose() => Session.OnChange -= OnSessionChange;
++}
+diff --git a/src/HrDashboard.Web/Components/Layout/MainLayout.razor b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+index 88f4962..d3f9604 100644
+--- a/src/HrDashboard.Web/Components/Layout/MainLayout.razor
++++ b/src/HrDashboard.Web/Components/Layout/MainLayout.razor
+@@ -49,22 +49,21 @@
+     <!-- Right panel -->
+     <div class="hr-right @(_rightOpen ? "" : "collapsed")">
+         <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid rgba(0,0,0,0.12)">
+             <MudText Typo="Typo.subtitle2" Style="flex:1">Results</MudText>
+             <MudIconButton Icon="@Icons.Material.Filled.ChevronRight"
+                            Size="Size.Small"
+                            OnClick="() => _rightOpen = false"
+                            Title="Hide results panel" />
+         </div>
+         <div class="hr-right-content">
+-            @* TODO Task 12: uncomment when ResultsPanel is created *@
+-            @* <ResultsPanel /> *@
++            <ResultsPanel />
+         </div>
+     </div>
+ 
+ </div>
+ 
+ @code {
+     private bool _leftOpen = true;
+     private bool _rightOpen = true;
+ 
+     private void NewChat()
+diff --git a/src/HrDashboard.Web/Components/_Imports.razor b/src/HrDashboard.Web/Components/_Imports.razor
+index 275bd98..18792ab 100644
+--- a/src/HrDashboard.Web/Components/_Imports.razor
++++ b/src/HrDashboard.Web/Components/_Imports.razor
+@@ -1,15 +1,16 @@
+ @using Microsoft.AspNetCore.Components
+ @using Microsoft.AspNetCore.Components.Authorization
+ @using Microsoft.AspNetCore.Components.Routing
+ @using Microsoft.AspNetCore.Components.Web
+ @using static Microsoft.AspNetCore.Components.Web.RenderMode
+ @using Microsoft.AspNetCore.Components.Web.Virtualization
+ @using Microsoft.AspNetCore.Components.Forms
+ @using HrDashboard.Web.Components
++@using HrDashboard.Web.Components.Chat
+ @using HrDashboard.Web.Components.Layout
+ @using HrDashboard.Web.Components.Pages
+ @using HrDashboard.Web.Services
+ @using MudBlazor
+ @using HrDashboard.Agents
+ @using HrDashboard.Agents.Models
+ @using Microsoft.Extensions.Logging
