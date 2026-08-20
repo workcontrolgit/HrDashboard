@@ -1,0 +1,55 @@
+@page "/login"
+@using Microsoft.AspNetCore.Identity
+@inject SignInManager<HrDashboard.Infrastructure.AppUser> SignInManager
+@inject NavigationManager Nav
+
+<PageTitle>Sign in — HR Analytics</PageTitle>
+
+<div class="auth-container">
+    <MudPaper Class="auth-card pa-8" Elevation="3">
+        <MudText Typo="Typo.h5" Class="mb-1">HR Analytics Portal</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">Sign in to continue</MudText>
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+        }
+
+        <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
+                      InputType="InputType.Email" Class="mb-3" FullWidth="true" />
+        <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                      InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
+                   OnClick="LoginAsync" Disabled="_loading">
+            @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
+            else { <span>Sign in</span> }
+        </MudButton>
+
+        <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
+            No account? <MudLink Href="/register">Register</MudLink>
+        </MudText>
+    </MudPaper>
+</div>
+
+@code {
+    private string _email = string.Empty;
+    private string _password = string.Empty;
+    private string? _error;
+    private bool _loading;
+
+    private async Task LoginAsync()
+    {
+        _loading = true;
+        _error = null;
+        var result = await SignInManager.PasswordSignInAsync(
+            _email, _password, isPersistent: true, lockoutOnFailure: false);
+
+        if (result.Succeeded)
+            Nav.NavigateTo("/", forceLoad: true);
+        else
+            _error = "Invalid email or password.";
+
+        _loading = false;
+    }
+}
