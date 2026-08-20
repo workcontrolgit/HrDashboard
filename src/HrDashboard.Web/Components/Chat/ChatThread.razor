@@ -1,0 +1,56 @@
+@inject ChatSessionService Session
+@implements IDisposable
+
+<div class="hr-messages" @ref="_scrollRef">
+    @if (Session.Messages.Count == 0)
+    {
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0.5">
+            <MudIcon Icon="@Icons.Material.Filled.Chat" Style="font-size:48px" />
+            <MudText Typo="Typo.body1" Class="mt-2">Ask anything about your HR data</MudText>
+        </div>
+    }
+    @foreach (var msg in Session.Messages)
+    {
+        @if (msg.Role == HrDashboard.Agents.Models.MessageRole.User)
+        {
+            <div class="msg-user">@msg.Content</div>
+        }
+        else
+        {
+            <div class="msg-assistant @(msg.IsStreaming && string.IsNullOrEmpty(msg.Content) ? "msg-streaming" : "")">
+                @if (string.IsNullOrEmpty(msg.Content) && msg.IsStreaming)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                }
+                else
+                {
+                    @msg.Content
+                    @if (msg.IsStreaming)
+                    {
+                        <span class="msg-streaming"></span>
+                    }
+                }
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private ElementReference _scrollRef;
+
+    protected override void OnInitialized()
+    {
+        Session.OnChange += OnSessionChange;
+    }
+
+    private void OnSessionChange()
+    {
+        InvokeAsync(async () =>
+        {
+            StateHasChanged();
+            await Task.Yield();
+        });
+    }
+
+    public void Dispose() => Session.OnChange -= OnSessionChange;
+}

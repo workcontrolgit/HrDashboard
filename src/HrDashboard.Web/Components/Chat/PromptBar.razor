@@ -1,0 +1,70 @@
+@inject ChatSessionService Session
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IDisposable
+
+<div class="hr-prompt-bar">
+    <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
+        <MudTextField @bind-Value="_prompt"
+                      Placeholder="Ask an HR analytics question..."
+                      Variant="Variant.Outlined"
+                      FullWidth="true"
+                      Lines="2"
+                      Disabled="Session.IsStreaming"
+                      OnKeyDown="HandleKeyDown" />
+        <MudIconButton Icon="@Icons.Material.Filled.Send"
+                       Color="Color.Primary"
+                       Size="Size.Large"
+                       OnClick="SendAsync"
+                       Disabled="Session.IsStreaming || string.IsNullOrWhiteSpace(_prompt)"
+                       Title="Send (Ctrl+Enter)" />
+    </MudStack>
+
+    <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-2" Spacing="1">
+        @foreach (var preset in _presets)
+        {
+            <MudChip T="string" OnClick="() => SelectPreset(preset)"
+                     Color="Color.Default" Size="Size.Small"
+                     Disabled="Session.IsStreaming">@preset</MudChip>
+        }
+    </MudStack>
+</div>
+
+@code {
+    private string _prompt = string.Empty;
+    private string? _userId;
+
+    private readonly string[] _presets =
+    [
+        "Average salary by department",
+        "Top 10 highest-paid employees",
+        "Headcount per department",
+        "Job salary ranges",
+        "Departments with more than 5 employees"
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Session.OnChange += StateHasChanged;
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        _userId = auth.User.FindFirst(
+            System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+    }
+
+    private void SelectPreset(string preset) => _prompt = preset;
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && e.CtrlKey)
+            await SendAsync();
+    }
+
+    private async Task SendAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_prompt) || Session.IsStreaming || _userId is null) return;
+        var prompt = _prompt;
+        _prompt = string.Empty;
+        await Session.SendAsync(prompt, _userId);
+    }
+
+    public void Dispose() => Session.OnChange -= StateHasChanged;
+}
