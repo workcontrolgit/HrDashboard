@@ -93,8 +93,7 @@ try
         return new HrAgentService(chatClient, endpoint, logger);
     });
 
-    // ChatSessionService registered in Task 13
-    // builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
+    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
 
     // ── Blazor + MudBlazor ───────────────────────────────────────────────────
     builder.Services.AddRazorComponents()
