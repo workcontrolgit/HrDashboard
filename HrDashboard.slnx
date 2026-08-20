@@ -8,5 +8,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/HrDashboard.McpServer.Tests/HrDashboard.McpServer.Tests.csproj" />
     <Project Path="tests/HrDashboard.Agents.Tests/HrDashboard.Agents.Tests.csproj" />
+    <Project Path="tests/HrDashboard.Infrastructure.Tests/HrDashboard.Infrastructure.Tests.csproj" />
   </Folder>
 </Solution>

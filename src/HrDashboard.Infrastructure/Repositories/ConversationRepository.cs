@@ -32,9 +32,9 @@ public class ConversationRepository(IDbContextFactory<AppDbContext> dbFactory) :
         Guid conversationId, string title, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        await db.Conversations
-            .Where(c => c.Id == conversationId)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Title, title), ct);
+        var conv = await db.Conversations.FirstAsync(c => c.Id == conversationId, ct);
+        conv.Title = title;
+        await db.SaveChangesAsync(ct);
     }
 
     public async Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
