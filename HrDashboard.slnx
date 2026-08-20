@@ -9,5 +9,6 @@
     <Project Path="tests/HrDashboard.McpServer.Tests/HrDashboard.McpServer.Tests.csproj" />
     <Project Path="tests/HrDashboard.Agents.Tests/HrDashboard.Agents.Tests.csproj" />
     <Project Path="tests/HrDashboard.Infrastructure.Tests/HrDashboard.Infrastructure.Tests.csproj" />
+    <Project Path="tests/HrDashboard.Web.E2E.Tests/HrDashboard.Web.E2E.Tests.csproj" />
   </Folder>
 </Solution>

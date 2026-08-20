@@ -131,6 +131,18 @@ To run the MCP tests directly:
 dotnet test .\tests\HrDashboard.McpServer.Tests
 ```
 
+To run the Web end-to-end tests (requires SQL Server LocalDB; starts and stops `HrDashboard.Web` automatically):
+
+```powershell
+dotnet test .\tests\HrDashboard.Web.E2E.Tests
+```
+
+One-time setup, after the first build, to download the Chromium browser Playwright drives:
+
+```powershell
+pwsh .\tests\HrDashboard.Web.E2E.Tests\bin\Debug\net10.0\playwright.ps1 install chromium
+```
+
 ## Logs
 
 Both applications write rolling logs under the repository `logs` directory:
