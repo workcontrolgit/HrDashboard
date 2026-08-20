@@ -1,7 +1,4 @@
 @page "/login"
-@using Microsoft.AspNetCore.Identity
-@inject SignInManager<HrDashboard.Infrastructure.AppUser> SignInManager
-@inject NavigationManager Nav
 
 <PageTitle>Sign in — HR Analytics</PageTitle>
 
@@ -10,21 +7,26 @@
         <MudText Typo="Typo.h5" Class="mb-1">HR Analytics Portal</MudText>
         <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">Sign in to continue</MudText>
 
-        @if (_error is not null)
+        @if (!string.IsNullOrEmpty(_error))
         {
             <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
         }
 
-        <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
-                      InputType="InputType.Email" Class="mb-3" FullWidth="true" />
-        <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
-                      InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+        <form method="post" action="/account/login-action">
+            <AntiforgeryToken />
+            <input type="hidden" name="email"    value="@_email" />
+            <input type="hidden" name="password" value="@_password" />
 
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
-                   OnClick="LoginAsync" Disabled="_loading">
-            @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
-            else { <span>Sign in</span> }
-        </MudButton>
+            <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
+                          InputType="InputType.Email" Class="mb-3" FullWidth="true" />
+            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                       Color="Color.Primary" FullWidth="true">
+                Sign in
+            </MudButton>
+        </form>
 
         <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
             No account? <MudLink Href="/register">Register</MudLink>
@@ -33,23 +35,16 @@
 </div>
 
 @code {
-    private string _email = string.Empty;
+    [SupplyParameterFromQuery(Name = "error")] private string? ErrorCode { get; set; }
+    [SupplyParameterFromQuery(Name = "email")] private string? EmailParam { get; set; }
+
+    private string _email    = string.Empty;
     private string _password = string.Empty;
-    private string? _error;
-    private bool _loading;
+    private string _error    = string.Empty;
 
-    private async Task LoginAsync()
+    protected override void OnInitialized()
     {
-        _loading = true;
-        _error = null;
-        var result = await SignInManager.PasswordSignInAsync(
-            _email, _password, isPersistent: true, lockoutOnFailure: false);
-
-        if (result.Succeeded)
-            Nav.NavigateTo("/", forceLoad: true);
-        else
-            _error = "Invalid email or password.";
-
-        _loading = false;
+        _email = EmailParam ?? string.Empty;
+        _error = ErrorCode == "invalid" ? "Invalid email or password." : string.Empty;
     }
 }

@@ -1,8 +1,4 @@
 @page "/register"
-@using Microsoft.AspNetCore.Identity
-@inject UserManager<HrDashboard.Infrastructure.AppUser> UserManager
-@inject SignInManager<HrDashboard.Infrastructure.AppUser> SignInManager
-@inject NavigationManager Nav
 
 <PageTitle>Register — HR Analytics</PageTitle>
 
@@ -11,25 +7,29 @@
         <MudText Typo="Typo.h5" Class="mb-1">Create account</MudText>
         <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-6">HR Analytics Portal</MudText>
 
-        @if (_errors.Count > 0)
+        @if (!string.IsNullOrEmpty(_error))
         {
-            <MudAlert Severity="Severity.Error" Class="mb-4">
-                @foreach (var e in _errors) { <div>@e</div> }
-            </MudAlert>
+            <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
         }
 
-        <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
-                      InputType="InputType.Email" Class="mb-3" FullWidth="true" />
-        <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
-                      InputType="InputType.Password" Class="mb-3" FullWidth="true" />
-        <MudTextField @bind-Value="_confirm" Label="Confirm password" Variant="Variant.Outlined"
-                      InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+        <form method="post" action="/account/register-action">
+            <AntiforgeryToken />
+            <input type="hidden" name="email"    value="@_email" />
+            <input type="hidden" name="password" value="@_password" />
+            <input type="hidden" name="confirm"  value="@_confirm" />
 
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
-                   OnClick="RegisterAsync" Disabled="_loading">
-            @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" /> }
-            else { <span>Register</span> }
-        </MudButton>
+            <MudTextField @bind-Value="_email" Label="Email" Variant="Variant.Outlined"
+                          InputType="InputType.Email" Class="mb-3" FullWidth="true" />
+            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Class="mb-3" FullWidth="true" />
+            <MudTextField @bind-Value="_confirm" Label="Confirm password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Class="mb-4" FullWidth="true" />
+
+            <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                       Color="Color.Primary" FullWidth="true">
+                Register
+            </MudButton>
+        </form>
 
         <MudText Align="Align.Center" Class="mt-4" Typo="Typo.body2">
             Already have an account? <MudLink Href="/login">Sign in</MudLink>
@@ -38,35 +38,17 @@
 </div>
 
 @code {
-    private string _email = string.Empty;
+    [SupplyParameterFromQuery(Name = "error")] private string? ErrorMsg { get; set; }
+    [SupplyParameterFromQuery(Name = "email")] private string? EmailParam { get; set; }
+
+    private string _email    = string.Empty;
     private string _password = string.Empty;
-    private string _confirm = string.Empty;
-    private List<string> _errors = [];
-    private bool _loading;
+    private string _confirm  = string.Empty;
+    private string _error    = string.Empty;
 
-    private async Task RegisterAsync()
+    protected override void OnInitialized()
     {
-        _errors = [];
-        if (_password != _confirm)
-        {
-            _errors = ["Passwords do not match."];
-            return;
-        }
-
-        _loading = true;
-        var user = new HrDashboard.Infrastructure.AppUser { UserName = _email, Email = _email };
-        var result = await UserManager.CreateAsync(user, _password);
-
-        if (result.Succeeded)
-        {
-            await SignInManager.SignInAsync(user, isPersistent: true);
-            Nav.NavigateTo("/", forceLoad: true);
-        }
-        else
-        {
-            _errors = result.Errors.Select(e => e.Description).ToList();
-        }
-
-        _loading = false;
+        _email = EmailParam ?? string.Empty;
+        _error = ErrorMsg  ?? string.Empty;
     }
 }

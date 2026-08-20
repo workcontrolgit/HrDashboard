@@ -1,4 +1,5 @@
 using Azure.Identity;
+using Microsoft.AspNetCore.Mvc;
 using HrDashboard.Agents;
 using HrDashboard.Infrastructure;
 using HrDashboard.Infrastructure.Repositories;
@@ -145,7 +146,43 @@ try
     app.UseAuthorization();
     app.UseAntiforgery();
 
-    // ── Logout endpoint ──────────────────────────────────────────────────────
+    // ── Auth endpoints (run in real HTTP context — SignalR circuit cannot write cookies) ──
+    app.MapPost("/account/login-action", async (
+        [FromForm] string email,
+        [FromForm] string password,
+        SignInManager<AppUser> signInManager) =>
+    {
+        var result = await signInManager.PasswordSignInAsync(
+            email, password, isPersistent: true, lockoutOnFailure: false);
+        return result.Succeeded
+            ? Results.LocalRedirect("/")
+            : Results.LocalRedirect($"/login?error=invalid&email={Uri.EscapeDataString(email)}");
+    });
+
+    app.MapPost("/account/register-action", async (
+        [FromForm] string email,
+        [FromForm] string password,
+        [FromForm] string confirm,
+        UserManager<AppUser> userManager,
+        SignInManager<AppUser> signInManager) =>
+    {
+        if (password != confirm)
+            return Results.LocalRedirect(
+                $"/register?error={Uri.EscapeDataString("Passwords do not match.")}&email={Uri.EscapeDataString(email)}");
+
+        var user = new AppUser { UserName = email, Email = email };
+        var result = await userManager.CreateAsync(user, password);
+        if (result.Succeeded)
+        {
+            await signInManager.SignInAsync(user, isPersistent: true);
+            return Results.LocalRedirect("/");
+        }
+
+        var errors = string.Join(" ", result.Errors.Select(e => e.Description));
+        return Results.LocalRedirect(
+            $"/register?error={Uri.EscapeDataString(errors)}&email={Uri.EscapeDataString(email)}");
+    });
+
     app.MapPost("/account/logout", async (SignInManager<AppUser> signInManager) =>
     {
         await signInManager.SignOutAsync();
