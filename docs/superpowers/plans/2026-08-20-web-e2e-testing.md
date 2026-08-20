@@ -132,6 +132,8 @@ Create `tests/HrDashboard.Web.E2E.Tests/WebAppFixture.cs`:
 
 ```csharp
 using System.Diagnostics;
+using System.Net.Http;
+using NUnit.Framework;
 
 namespace HrDashboard.Web.E2E.Tests;
 
@@ -250,6 +252,7 @@ Create `tests/HrDashboard.Web.E2E.Tests/AuthTests.cs`. Page-state assertions use
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using Microsoft.Playwright.NUnit;
+using NUnit.Framework;
 
 namespace HrDashboard.Web.E2E.Tests;
 
