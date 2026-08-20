@@ -44,6 +44,19 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         _logger            = logger;
     }
 
+    /// <summary>Test-only constructor — bypasses MCP HTTP initialization.</summary>
+    internal HrAgentService(
+        IChatClient chatClient,
+        IList<AITool> tools,
+        ILogger<HrAgentService> logger)
+    {
+        _chatClient        = chatClient;
+        _mcpServerEndpoint = string.Empty;
+        _logger            = logger;
+        _tools             = tools;
+        _initialized       = true;
+    }
+
     private async Task EnsureInitializedAsync(CancellationToken ct)
     {
         if (_initialized) return;
