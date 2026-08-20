@@ -1,5 +1,6 @@
 using Azure.Identity;
 using HrDashboard.Agents;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using MudBlazor.Services;
 using OllamaSharp;
@@ -81,7 +82,15 @@ try
         return new HrAgentService(chatClient, endpoint, logger);
     });
 
-    // ── 6. Blazor + MudBlazor ─────────────────────────────────────────────────
+    // ── 6. DbContext — TEMP registration for EF migration scaffolding (replaced by Task 6) ──
+
+    // TEMP: DbContext registration for EF migration scaffolding — replaced by Task 6
+    var connStr = builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Missing ConnectionStrings:DefaultConnection");
+    builder.Services.AddDbContext<HrDashboard.Infrastructure.AppDbContext>(o =>
+        o.UseSqlServer(connStr));
+
+    // ── 7. Blazor + MudBlazor ─────────────────────────────────────────────────
 
     builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
