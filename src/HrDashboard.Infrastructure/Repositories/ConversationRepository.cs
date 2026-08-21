@@ -37,6 +37,18 @@ public class ConversationRepository(IDbContextFactory<AppDbContext> dbFactory) :
         await db.SaveChangesAsync(ct);
     }
 
+    public async Task DeleteAsync(Guid conversationId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        // Include Messages so cascade delete fires for providers (e.g. EF Core InMemory)
+        // that only cascade entities the change tracker has actually loaded.
+        var conv = await db.Conversations
+            .Include(c => c.Messages)
+            .FirstAsync(c => c.Id == conversationId, ct);
+        db.Conversations.Remove(conv);
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(
         Guid conversationId, CancellationToken ct = default)
     {

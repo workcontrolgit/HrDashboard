@@ -7,6 +7,7 @@ public interface IConversationRepository
     Task<List<ConversationSummary>> GetByUserAsync(string userId, CancellationToken ct = default);
     Task<ConversationSummary> CreateAsync(string userId, string title, CancellationToken ct = default);
     Task UpdateTitleAsync(Guid conversationId, string title, CancellationToken ct = default);
+    Task DeleteAsync(Guid conversationId, CancellationToken ct = default);
 
     /// <summary>Returns (Role, Content) only — no MetricsJson. Used for agent context.</summary>
     Task<List<(MessageRole Role, string Content)>> GetMessagesForAgentAsync(

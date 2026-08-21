@@ -1,5 +1,6 @@
 @inject ChatSessionService Session
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IDialogService DialogService
 @implements IDisposable
 
 <div style="display:flex;flex-direction:column;height:100%">
@@ -14,18 +15,42 @@
         @foreach (var conv in Session.Conversations)
         {
             var isActive = Session.CurrentConversation?.Id == conv.Id;
-            <button type="button"
-                    class="conv-item @(isActive ? "active" : "")"
-                    aria-current="@(isActive ? "true" : null)"
-                    @onclick="() => SelectConversationAsync(conv.Id)">
-                <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                    @conv.Title
-                </MudText>
-                <MudText Typo="Typo.caption"
-                         Style="@(isActive ? "color:rgba(255,255,255,0.85)" : "color:var(--mud-palette-text-secondary)")">
-                    @conv.CreatedAt.ToLocalTime().ToString("MMM d")
-                </MudText>
-            </button>
+            <div class="conv-item-row @(isActive ? "active" : "")">
+                @if (_editingId == conv.Id)
+                {
+                    <div class="conv-item conv-item-editing">
+                        <MudTextField T="string" @bind-Value="_editTitle"
+                                      Variant="Variant.Text" Margin="Margin.Dense"
+                                      AutoFocus="true" Immediate="true"
+                                      OnKeyDown="@(e => HandleRenameKeyDown(e, conv.Id))"
+                                      onblur="@(() => CommitRenameAsync(conv.Id))" />
+                    </div>
+                }
+                else
+                {
+                    <button type="button"
+                            class="conv-item"
+                            aria-current="@(isActive ? "true" : null)"
+                            @onclick="() => SelectConversationAsync(conv.Id)">
+                        <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                            @conv.Title
+                        </MudText>
+                        <MudText Typo="Typo.caption"
+                                 Style="@(isActive ? "color:rgba(255,255,255,0.85)" : "color:var(--mud-palette-text-secondary)")">
+                            @conv.CreatedAt.ToLocalTime().ToString("MMM d")
+                        </MudText>
+                    </button>
+
+                    <div class="conv-actions">
+                        <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Color="Color.Inherit"
+                                 AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                                 AriaLabel="@($"Conversation options for {conv.Title}")">
+                            <MudMenuItem OnClick="@(() => StartRename(conv.Id, conv.Title))">Rename</MudMenuItem>
+                            <MudMenuItem OnClick="@(() => ConfirmDeleteAsync(conv.Id, conv.Title))">Delete</MudMenuItem>
+                        </MudMenu>
+                    </div>
+                }
+            </div>
         }
     </div>
 
@@ -55,6 +80,8 @@
     [Parameter] public EventCallback OnNewChat { get; set; }
 
     private string? _userId;
+    private Guid? _editingId;
+    private string _editTitle = string.Empty;
 
     protected override async Task OnInitializedAsync()
     {
@@ -71,6 +98,41 @@
     {
         if (_userId is null) return;
         await Session.LoadConversationAsync(id, _userId);
+    }
+
+    private void StartRename(Guid id, string currentTitle)
+    {
+        _editingId = id;
+        _editTitle = currentTitle;
+    }
+
+    private async Task HandleRenameKeyDown(KeyboardEventArgs e, Guid conversationId)
+    {
+        if (e.Key == "Enter")
+            await CommitRenameAsync(conversationId);
+        else if (e.Key == "Escape")
+            _editingId = null;
+    }
+
+    private async Task CommitRenameAsync(Guid conversationId)
+    {
+        if (_editingId != conversationId) return; // already committed or cancelled
+        _editingId = null;
+        if (_userId is not null)
+            await Session.RenameConversationAsync(conversationId, _editTitle, _userId);
+    }
+
+    private async Task ConfirmDeleteAsync(Guid id, string title)
+    {
+        if (_userId is null) return;
+
+        var confirmed = await DialogService.ShowMessageBox(
+            "Delete conversation?",
+            $"\"{title}\" will be permanently deleted. This can't be undone.",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (confirmed == true)
+            await Session.DeleteConversationAsync(id, _userId);
     }
 
     public void Dispose() => Session.OnChange -= StateHasChanged;

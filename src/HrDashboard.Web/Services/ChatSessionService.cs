@@ -60,6 +60,37 @@ public class ChatSessionService(
         Notify();
     }
 
+    public async Task RenameConversationAsync(
+        Guid conversationId, string newTitle, string userId, CancellationToken ct = default)
+    {
+        var trimmed = newTitle.Trim();
+        if (trimmed.Length == 0) return;
+
+        await repo.UpdateTitleAsync(conversationId, trimmed, ct);
+
+        if (CurrentConversation?.Id == conversationId)
+            CurrentConversation = CurrentConversation with { Title = trimmed };
+
+        Conversations = await repo.GetByUserAsync(userId, ct);
+        Notify();
+    }
+
+    public async Task DeleteConversationAsync(
+        Guid conversationId, string userId, CancellationToken ct = default)
+    {
+        await repo.DeleteAsync(conversationId, ct);
+
+        if (CurrentConversation?.Id == conversationId)
+        {
+            CurrentConversation = null;
+            Messages.Clear();
+            CurrentMetrics = [];
+        }
+
+        Conversations = await repo.GetByUserAsync(userId, ct);
+        Notify();
+    }
+
     public async Task SendAsync(string prompt, string userId, CancellationToken ct = default)
     {
         if (IsStreaming || string.IsNullOrWhiteSpace(prompt)) return;

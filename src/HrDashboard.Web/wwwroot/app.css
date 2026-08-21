@@ -126,30 +126,54 @@ html, body {
     overflow-y: auto;
 }
 
+.conv-item-row {
+    display: flex;
+    align-items: center;
+    border-radius: 8px;
+    margin: 2px 8px;
+    transition: background 0.15s;
+}
+
+.conv-item-row:hover {
+    background: rgba(0,0,0,0.06);
+}
+
+.conv-item-row.active {
+    /* Solid primary + white text (6.00:1) — the lighter "-lighten" tint with
+       default dark text measured only 2.39:1, well under WCAG AA's 4.5:1. */
+    background: var(--mud-palette-primary);
+    color: var(--mud-palette-primary-text);
+}
+
 .conv-item {
+    flex: 1;
+    min-width: 0;
     display: block;
     padding: 8px 12px;
     cursor: pointer;
-    border-radius: 8px;
-    margin: 2px 8px;
-    transition: background 0.15s, border-color 0.15s;
     background: transparent;
     border: none;
-    border-left: 3px solid transparent;
     font: inherit;
     color: inherit;
     text-align: left;
 }
 
-.conv-item:hover {
-    background: rgba(0,0,0,0.06);
+.conv-item-editing {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
 }
 
-.conv-item.active {
-    /* Solid primary + white text (6.00:1) — the lighter "-lighten" tint with
-       default dark text measured only 2.39:1, well under WCAG AA's 4.5:1. */
-    background: var(--mud-palette-primary);
-    color: var(--mud-palette-primary-text);
+.conv-actions {
+    display: flex;
+    padding-right: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.conv-item-row:hover .conv-actions,
+.conv-item-row:focus-within .conv-actions {
+    opacity: 1;
 }
 
 .conv-profile {

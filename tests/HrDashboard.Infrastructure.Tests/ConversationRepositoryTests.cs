@@ -140,4 +140,33 @@ public class ConversationRepositoryTests
         messages[1].Content.Should().Be("A");
         messages[1].MetricsJson.Should().Contain("label");
     }
+
+    // ── DeleteAsync ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteAsync_RemovesConversationFromUserList()
+    {
+        var factory = new TestDbContextFactory();
+        var repo    = new ConversationRepository(factory);
+        var conv    = await repo.CreateAsync("user-c", "To Delete");
+
+        await repo.DeleteAsync(conv.Id);
+
+        var list = await repo.GetByUserAsync("user-c");
+        list.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task DeleteAsync_CascadeDeletesMessages()
+    {
+        var factory = new TestDbContextFactory();
+        var repo    = new ConversationRepository(factory);
+        var conv    = await repo.CreateAsync("user-d", "With Messages");
+        await repo.AddMessageAsync(conv.Id, MessageRole.User, "Hello!");
+
+        await repo.DeleteAsync(conv.Id);
+
+        await using var db = factory.CreateDbContext();
+        db.Messages.Any(m => m.ConversationId == conv.Id).Should().BeFalse();
+    }
 }
