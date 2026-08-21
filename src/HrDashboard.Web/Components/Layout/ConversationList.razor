@@ -21,7 +21,8 @@
                 <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                     @conv.Title
                 </MudText>
-                <MudText Typo="Typo.caption" Style="color:var(--mud-palette-text-secondary)">
+                <MudText Typo="Typo.caption"
+                         Style="@(isActive ? "color:rgba(255,255,255,0.85)" : "color:var(--mud-palette-text-secondary)")">
                     @conv.CreatedAt.ToLocalTime().ToString("MMM d")
                 </MudText>
             </button>

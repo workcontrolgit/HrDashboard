@@ -146,8 +146,10 @@ html, body {
 }
 
 .conv-item.active {
-    background: var(--mud-palette-primary-lighten);
-    border-left-color: var(--mud-palette-primary);
+    /* Solid primary + white text (6.00:1) — the lighter "-lighten" tint with
+       default dark text measured only 2.39:1, well under WCAG AA's 4.5:1. */
+    background: var(--mud-palette-primary);
+    color: var(--mud-palette-primary-text);
 }
 
 .conv-profile {
