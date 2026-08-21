@@ -127,11 +127,18 @@ html, body {
 }
 
 .conv-item {
+    display: block;
     padding: 8px 12px;
     cursor: pointer;
     border-radius: 8px;
     margin: 2px 8px;
-    transition: background 0.15s;
+    transition: background 0.15s, border-color 0.15s;
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
 }
 
 .conv-item:hover {
@@ -140,6 +147,7 @@ html, body {
 
 .conv-item.active {
     background: var(--mud-palette-primary-lighten);
+    border-left-color: var(--mud-palette-primary);
 }
 
 .conv-profile {

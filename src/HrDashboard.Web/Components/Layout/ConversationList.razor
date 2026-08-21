@@ -7,22 +7,24 @@
     <div class="conv-list">
         @if (Session.Conversations.Count == 0)
         {
-            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="pa-3">
+            <MudText Typo="Typo.caption" Class="pa-3" Style="color:var(--mud-palette-text-secondary)">
                 No conversations yet. Start one below.
             </MudText>
         }
         @foreach (var conv in Session.Conversations)
         {
             var isActive = Session.CurrentConversation?.Id == conv.Id;
-            <div class="conv-item @(isActive ? "active" : "")"
-                 @onclick="() => SelectConversationAsync(conv.Id)">
+            <button type="button"
+                    class="conv-item @(isActive ? "active" : "")"
+                    aria-current="@(isActive ? "true" : null)"
+                    @onclick="() => SelectConversationAsync(conv.Id)">
                 <MudText Typo="Typo.body2" Style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                     @conv.Title
                 </MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                <MudText Typo="Typo.caption" Style="color:var(--mud-palette-text-secondary)">
                     @conv.CreatedAt.ToLocalTime().ToString("MMM d")
                 </MudText>
-            </div>
+            </button>
         }
     </div>
 
@@ -30,7 +32,7 @@
         <AuthorizeView>
             <Authorized>
                 <div style="display:flex;align-items:center;gap:8px">
-                    <MudIcon Icon="@Icons.Material.Filled.AccountCircle" Color="Color.Secondary" />
+                    <MudIcon Icon="@Icons.Material.Filled.AccountCircle" Style="color:var(--mud-palette-text-secondary)" />
                     <MudText Typo="Typo.body2" Style="flex:1;overflow:hidden;text-overflow:ellipsis">
                         @context.User.Identity?.Name
                     </MudText>

@@ -4,7 +4,7 @@
 <div class="hr-messages" @ref="_scrollRef">
     @if (Session.Messages.Count == 0)
     {
-        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;opacity:0.5">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--mud-palette-text-secondary)">
             <MudIcon Icon="@Icons.Material.Filled.Chat" Style="font-size:48px" />
             <MudText Typo="Typo.body1" Class="mt-2">Ask anything about your HR data</MudText>
         </div>
