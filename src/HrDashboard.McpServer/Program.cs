@@ -45,6 +45,7 @@ try
             mcpBuilderStdio.WithTools<SqlServerAnalyticsTools>();
         else
             mcpBuilderStdio.WithTools<OracleAnalyticsTools>();
+        mcpBuilderStdio.WithTools<HrSchemaTools>();
 
         using var h = host.Build();
         await h.RunAsync();
@@ -63,6 +64,7 @@ try
         mcpBuilderHttp.WithTools<SqlServerAnalyticsTools>();
     else
         mcpBuilderHttp.WithTools<OracleAnalyticsTools>();
+    mcpBuilderHttp.WithTools<HrSchemaTools>();
 
     var app = builder.Build();
     app.MapMcp("/mcp");
