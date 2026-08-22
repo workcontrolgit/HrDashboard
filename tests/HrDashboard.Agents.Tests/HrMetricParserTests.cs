@@ -58,6 +58,49 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void TryParse_GenuineEmptyArray_ReturnsTrueWithEmptyList()
+    {
+        // A model correctly answering "no rows match" (e.g. "departments with more than
+        // 5 employees" against a 5-employee dataset) emits an empty array per the system
+        // prompt's contract — this must be distinguishable from "no array present at all".
+        const string text = "[]\nNo departments have more than 5 employees.";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryParse_NoJsonArray_ReturnsFalse()
+    {
+        var found = HrMetricParser.TryParse("Just a conversational answer with no data.", out var metrics);
+
+        found.Should().BeFalse();
+        metrics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void TryParse_ValidJsonArrayWithRows_ReturnsTrueWithRows()
+    {
+        const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void TryParse_InvalidJson_ReturnsFalse()
+    {
+        var found = HrMetricParser.TryParse("[not valid json{{", out var metrics);
+
+        found.Should().BeFalse();
+        metrics.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Parse_ToolCallScaffoldingBeforePayload_ExtractsRealArray()
     {
         // Reproduces a local-LLM (Ollama) quirk: the model echoes back the raw tool-call
