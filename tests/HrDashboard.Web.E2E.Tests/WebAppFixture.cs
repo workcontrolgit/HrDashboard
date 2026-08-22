@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http;
-using NUnit.Framework;
+using Xunit;
 
 namespace HrDashboard.Web.E2E.Tests;
 
@@ -10,8 +10,7 @@ namespace HrDashboard.Web.E2E.Tests;
 /// InteractiveServer depends on a live SignalR circuit, so there is no in-memory
 /// TestServer option here.
 /// </summary>
-[SetUpFixture]
-public class WebAppFixture
+public class WebAppFixture : IAsyncLifetime
 {
     // NOTE: This run passes --urls http://localhost:5100 only, so Program.cs's
     // UseHttpsRedirection() is a no-op here (no HTTPS URL is configured to redirect to).
@@ -21,8 +20,7 @@ public class WebAppFixture
 
     private Process? _process;
 
-    [OneTimeSetUp]
-    public async Task StartWebAppAsync()
+    public async Task InitializeAsync()
     {
         await EnsurePortFreeAsync();
 
@@ -56,15 +54,18 @@ public class WebAppFixture
         }
         catch
         {
-            // NUnit does not reliably run [OneTimeTearDown] after a failed [OneTimeSetUp],
-            // so clean up the subprocess here before rethrowing the original failure.
+            // A failed InitializeAsync means xUnit will not call DisposeAsync for this
+            // fixture instance, so clean up the subprocess here before rethrowing.
             KillProcess();
             throw;
         }
     }
 
-    [OneTimeTearDown]
-    public void StopWebApp() => KillProcess();
+    public Task DisposeAsync()
+    {
+        KillProcess();
+        return Task.CompletedTask;
+    }
 
     private void KillProcess()
     {
