@@ -1,107 +1,65 @@
-using ModelContextProtocol.Client;
+using Oracle.ManagedDataAccess.Client;
 using Serilog;
 
 namespace HrDashboard.McpServer;
 
-/// <summary>
-/// Singleton warm bridge to Oracle SQLcl MCP subprocess.
-/// Started once at host startup; keeps the sql -mcp process alive.
-/// </summary>
-public sealed class OracleBridge : IHostedService, IAsyncDisposable, IOracleBridge
+public sealed class OracleBridge : IHrDataBridge
 {
-    private readonly string _sqlclPath;
-    private readonly string _connectionName;
-    private McpClient? _client;
-    private bool _connected;
+    private readonly string _connectionString;
+    private readonly string[] _visibleTables;
 
     public OracleBridge(IConfiguration config)
     {
-        _sqlclPath     = config["SqlclMcp:Path"] ?? string.Empty;
-        _connectionName = config["SqlclMcp:ConnectionName"] ?? "hr_local";
+        _connectionString = config.GetConnectionString("HrData")
+            ?? throw new InvalidOperationException("Missing ConnectionStrings:HrData");
+        _visibleTables = (config["Database:VisibleTables"] ?? "EMPLOYEES,DEPARTMENTS,JOBS,LOCATIONS")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    public bool IsAvailable => _client is not null;
+    public Task<string> RunSqlAsync(string sql, CancellationToken ct = default) =>
+        ExecuteAsync(sql, parameters: null, ct);
 
-    public async Task StartAsync(CancellationToken ct)
+    public Task<string> ListTablesAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_sqlclPath) || !File.Exists(_sqlclPath))
-        {
-            Log.Warning("[OracleBridge] SQLcl not found at {Path} — Oracle tools disabled", _sqlclPath);
-            return;
-        }
+        var inClause = string.Join(",", _visibleTables.Select((_, i) => $":t{i}"));
+        var sql = $"SELECT table_name FROM user_tables WHERE table_name IN ({inClause}) ORDER BY table_name";
+        var parameters = _visibleTables
+            .Select((name, i) => ($"t{i}", (object)name))
+            .ToDictionary(p => p.Item1, p => p.Item2);
+        return ExecuteAsync(sql, parameters, ct);
+    }
 
+    public Task<string> DescribeTableAsync(string tableName, CancellationToken ct = default)
+    {
+        if (!_visibleTables.Contains(tableName, StringComparer.OrdinalIgnoreCase))
+            return Task.FromResult("[Rejected: table not in the allowed HR table list]");
+
+        const string sql = """
+            SELECT column_name, data_type, nullable
+            FROM user_tab_columns
+            WHERE table_name = :t0
+            ORDER BY column_id
+            """;
+        return ExecuteAsync(sql, new Dictionary<string, object> { ["t0"] = tableName }, ct);
+    }
+
+    private async Task<string> ExecuteAsync(
+        string sql, IReadOnlyDictionary<string, object>? parameters, CancellationToken ct)
+    {
         try
         {
-            var transport = new StdioClientTransport(new StdioClientTransportOptions
-            {
-                Command   = _sqlclPath,
-                Arguments = ["-mcp"],
-                Name      = "OracleSqlcl",
-                StandardErrorLines = line => Log.Debug("[SQLcl] {Line}", line)
-            });
+            await using var connection = new OracleConnection(_connectionString);
+            await connection.OpenAsync(ct);
 
-            _client = await McpClient.CreateAsync(transport, cancellationToken: ct);
-            Log.Information("[OracleBridge] Oracle SQLcl MCP started");
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.CommandTimeout = 10;
+            if (parameters is not null)
+                foreach (var (name, value) in parameters)
+                    command.Parameters.Add(new OracleParameter(name, value));
 
-            await ConnectAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "[OracleBridge] Failed to start Oracle SQLcl MCP");
-        }
-    }
-
-    public async Task StopAsync(CancellationToken ct)
-    {
-        if (_client is not null)
-            await _client.DisposeAsync();
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_client is not null)
-            await _client.DisposeAsync();
-    }
-
-    public async Task ConnectAsync(CancellationToken ct = default)
-    {
-        if (_client is null || _connected) return;
-        try
-        {
-            await _client.CallToolAsync("connect",
-                new Dictionary<string, object?> { ["connection_name"] = _connectionName },
-                cancellationToken: ct);
-            _connected = true;
-            Log.Information("[OracleBridge] Connected to Oracle as '{Connection}'", _connectionName);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "[OracleBridge] Connect call failed — will retry on first query");
-        }
-    }
-
-    public async Task<string> RunSqlAsync(string sql, CancellationToken ct = default)
-    {
-        if (_client is null)
-            return "[Oracle bridge unavailable — check SqlclMcp:Path configuration]";
-
-        if (!_connected)
-            await ConnectAsync(ct);
-
-        try
-        {
-            Log.Debug("[OracleBridge] SQL: {Sql}", sql);
-            var result = await _client.CallToolAsync("sql_run",
-                new Dictionary<string, object?> { ["sql"] = sql },
-                cancellationToken: ct);
-
-            var text = result.Content
-                .OfType<ModelContextProtocol.Protocol.TextContentBlock>()
-                .Select(c => c.Text ?? string.Empty)
-                .FirstOrDefault() ?? string.Empty;
-
-            Log.Debug("[OracleBridge] Result length: {Len}", text.Length);
-            return text;
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            return await DbResultSerializer.ReadAsJsonAsync(reader, ct);
         }
         catch (Exception ex)
         {

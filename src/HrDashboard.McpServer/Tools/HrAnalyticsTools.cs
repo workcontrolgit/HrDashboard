@@ -5,7 +5,7 @@ using ModelContextProtocol.Server;
 namespace HrDashboard.McpServer.Tools;
 
 [McpServerToolType]
-public sealed class HrAnalyticsTools(IOracleBridge oracle)
+public sealed class HrAnalyticsTools(IHrDataBridge oracle)
 {
     [McpServerTool(Name = "GetTopEarnersByDepartment"),
      Description("Returns the top N highest-paid employees grouped by department. Returns JSON array with EmployeeName, DepartmentName, Salary. This is the complete answer for 'top/highest-paid employees' questions — do not follow up with another tool for the same data.")]
