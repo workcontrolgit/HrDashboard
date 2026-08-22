@@ -135,17 +135,19 @@ public class ChatSessionService(
             // Strip any tool-call/tool-result scaffolding the local LLM may have echoed
             // before the intended payload, then parse metrics from the cleaned response.
             var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);
-            var metrics = HrMetricParser.Parse(cleaned);
+            var arrayFound = HrMetricParser.TryParse(cleaned, out var metrics);
             assistantVm.Metrics = metrics;
             CurrentMetrics = metrics;
 
-            if (metrics.Count == 0)
+            if (!arrayFound)
             {
                 // Per SystemPrompt, every response must include a JSON metrics array — if
                 // none was found, the model emitted narration/scaffolding instead of a real
                 // answer (e.g. "Calling RunHrQuery tool..." left dangling with nothing after
                 // it) rather than a genuine data-free reply. Don't show that raw fragment to
                 // the user; log the full text for diagnosis and show an honest fallback.
+                // (A genuinely empty result — the model correctly emitting "[]" for a
+                // no-rows-match answer — has arrayFound == true and is handled below instead.)
                 logger.LogWarning(
                     "No HrMetricRow array found in assistant response for \"{Prompt}\" — raw text: {RawText}",
                     prompt, cleaned);

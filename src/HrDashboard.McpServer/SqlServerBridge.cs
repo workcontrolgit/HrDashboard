@@ -1,14 +1,14 @@
-using Oracle.ManagedDataAccess.Client;
+using Microsoft.Data.SqlClient;
 using Serilog;
 
 namespace HrDashboard.McpServer;
 
-public sealed class OracleBridge : IHrDataBridge
+public sealed class SqlServerBridge : IHrDataBridge
 {
     private readonly string _connectionString;
     private readonly string[] _visibleTables;
 
-    public OracleBridge(IConfiguration config)
+    public SqlServerBridge(IConfiguration config)
     {
         _connectionString = config.GetConnectionString("HrData")
             ?? throw new InvalidOperationException("Missing ConnectionStrings:HrData");
@@ -21,8 +21,8 @@ public sealed class OracleBridge : IHrDataBridge
 
     public Task<string> ListTablesAsync(CancellationToken ct = default)
     {
-        var inClause = string.Join(",", _visibleTables.Select((_, i) => $":t{i}"));
-        var sql = $"SELECT table_name FROM user_tables WHERE table_name IN ({inClause}) ORDER BY table_name";
+        var inClause = string.Join(",", _visibleTables.Select((_, i) => $"@t{i}"));
+        var sql = $"SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME IN ({inClause}) ORDER BY TABLE_NAME";
         var parameters = _visibleTables
             .Select((name, i) => ($"t{i}", (object)name))
             .ToDictionary(p => p.Item1, p => p.Item2);
@@ -36,10 +36,10 @@ public sealed class OracleBridge : IHrDataBridge
             return Task.FromResult("[Rejected: table not in the allowed HR table list]");
 
         const string sql = """
-            SELECT column_name, data_type, CASE nullable WHEN 'Y' THEN 'YES' ELSE 'NO' END AS is_nullable
-            FROM user_tab_columns
-            WHERE table_name = :t0
-            ORDER BY column_id
+            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = @t0
+            ORDER BY ORDINAL_POSITION
             """;
         return ExecuteAsync(sql, new Dictionary<string, object> { ["t0"] = canonical }, ct);
     }
@@ -49,23 +49,22 @@ public sealed class OracleBridge : IHrDataBridge
     {
         try
         {
-            await using var connection = new OracleConnection(_connectionString);
+            await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(ct);
 
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.CommandTimeout = 10;
-            command.BindByName = true;
             if (parameters is not null)
                 foreach (var (name, value) in parameters)
-                    command.Parameters.Add(new OracleParameter(name, value));
+                    command.Parameters.AddWithValue(name, value);
 
             await using var reader = await command.ExecuteReaderAsync(ct);
             return await DbResultSerializer.ReadAsJsonAsync(reader, ct);
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "[OracleBridge] SQL execution failed");
+            Log.Error(ex, "[SqlServerBridge] SQL execution failed");
             return $"[SQL error: {ex.Message}]";
         }
     }

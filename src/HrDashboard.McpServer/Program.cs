@@ -38,11 +38,13 @@ try
             ContentRootPath = AppContext.BaseDirectory
         });
         host.Services.AddSerilog();
-        ConfigureServices(host.Services, host.Configuration);
-        host.Services
-            .AddMcpServer()
-            .WithTools<HrAnalyticsTools>()
-            .WithStdioServerTransport();
+        var provider = ConfigureServices(host.Services, host.Configuration);
+        var mcpBuilderStdio = host.Services.AddMcpServer().WithStdioServerTransport();
+        if (provider == "SqlServer")
+            mcpBuilderStdio.WithTools<SqlServerAnalyticsTools>();
+        else
+            mcpBuilderStdio.WithTools<OracleAnalyticsTools>();
+        mcpBuilderStdio.WithTools<HrSchemaTools>();
 
         using var h = host.Build();
         await h.RunAsync();
@@ -55,11 +57,13 @@ try
         ContentRootPath = AppContext.BaseDirectory
     });
     builder.Host.UseSerilog();
-    ConfigureServices(builder.Services, builder.Configuration);
-    builder.Services
-        .AddMcpServer()
-        .WithTools<HrAnalyticsTools>()
-        .WithHttpTransport();
+    var httpProvider = ConfigureServices(builder.Services, builder.Configuration);
+    var mcpBuilderHttp = builder.Services.AddMcpServer().WithHttpTransport();
+    if (httpProvider == "SqlServer")
+        mcpBuilderHttp.WithTools<SqlServerAnalyticsTools>();
+    else
+        mcpBuilderHttp.WithTools<OracleAnalyticsTools>();
+    mcpBuilderHttp.WithTools<HrSchemaTools>();
 
     var app = builder.Build();
     app.MapMcp("/mcp");
@@ -83,12 +87,22 @@ static string SolutionRoot()
     return dir?.FullName ?? AppContext.BaseDirectory;
 }
 
-static void ConfigureServices(IServiceCollection services, IConfiguration config)
+static string ConfigureServices(IServiceCollection services, IConfiguration config)
 {
-    // OracleBridge: singleton IHostedService — starts sql -mcp subprocess at startup.
-    // HrAnalyticsTools depends on IOracleBridge, so the interface must resolve to the
-    // same singleton instance, not just the concrete type.
-    services.AddSingleton<OracleBridge>();
-    services.AddSingleton<IOracleBridge>(sp => sp.GetRequiredService<OracleBridge>());
-    services.AddHostedService(sp => sp.GetRequiredService<OracleBridge>());
+    var provider = config["Database:Provider"] ?? "Oracle";
+
+    switch (provider)
+    {
+        case "Oracle":
+            services.AddSingleton<IHrDataBridge, OracleBridge>();
+            break;
+        case "SqlServer":
+            services.AddSingleton<IHrDataBridge, SqlServerBridge>();
+            break;
+        default:
+            throw new InvalidOperationException(
+                $"Unrecognized Database:Provider '{provider}' — expected 'Oracle' or 'SqlServer'.");
+    }
+
+    return provider;
 }

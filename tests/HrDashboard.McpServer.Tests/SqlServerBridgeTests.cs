@@ -4,14 +4,14 @@ using Xunit;
 
 namespace HrDashboard.McpServer.Tests;
 
-public class OracleBridgeTests
+public class SqlServerBridgeTests
 {
     [Fact]
     public void Constructor_MissingConnectionString_Throws()
     {
         var config = new ConfigurationBuilder().Build();
 
-        var act = () => new OracleBridge(config);
+        var act = () => new SqlServerBridge(config);
 
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*ConnectionStrings:HrData*");
@@ -26,9 +26,9 @@ public class OracleBridgeTests
                 ["ConnectionStrings:HrData"] = "NotAValidKey=NotAValidValue"
             })
             .Build();
-        var bridge = new OracleBridge(config);
+        var bridge = new SqlServerBridge(config);
 
-        var result = await bridge.RunSqlAsync("SELECT 1 FROM dual");
+        var result = await bridge.RunSqlAsync("SELECT 1");
 
         result.Should().StartWith("[SQL error:");
     }

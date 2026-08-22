@@ -40,11 +40,27 @@ public static class HrMetricParser
 
     /// <summary>
     /// Extracts HrMetricRow[] from LLM text. Looks for a JSON array anywhere in the response.
-    /// Falls back to empty array — never throws.
+    /// Falls back to empty array — never throws. Does not distinguish a genuine empty result
+    /// (model correctly answered "no rows match") from no array being present at all; use
+    /// <see cref="TryParse"/> when that distinction matters.
     /// </summary>
     public static IReadOnlyList<HrMetricRow> Parse(string llmText)
     {
-        if (string.IsNullOrWhiteSpace(llmText)) return [];
+        TryParse(llmText, out var metrics);
+        return metrics;
+    }
+
+    /// <summary>
+    /// Extracts HrMetricRow[] from LLM text, same as <see cref="Parse"/>, but the return value
+    /// tells the caller whether a JSON array was actually present — a genuine empty result
+    /// (e.g. "no departments have more than 5 employees" correctly emitting "[]") must be
+    /// distinguished from narration/scaffolding with no array at all, since both otherwise
+    /// produce an empty list.
+    /// </summary>
+    public static bool TryParse(string llmText, out IReadOnlyList<HrMetricRow> metrics)
+    {
+        metrics = [];
+        if (string.IsNullOrWhiteSpace(llmText)) return false;
 
         var cleaned = StripScaffolding(llmText);
 
@@ -52,17 +68,18 @@ public static class HrMetricParser
         var start = cleaned.IndexOf('[');
         var end   = cleaned.LastIndexOf(']');
 
-        if (start < 0 || end <= start) return [];
+        if (start < 0 || end <= start) return false;
 
         var json = cleaned[start..(end + 1)];
 
         try
         {
-            return JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+            metrics = JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+            return true;
         }
         catch
         {
-            return [];
+            return false;
         }
     }
 
