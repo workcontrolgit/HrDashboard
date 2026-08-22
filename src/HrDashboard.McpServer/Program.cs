@@ -11,6 +11,7 @@ var tempConfig = new ConfigurationBuilder()
     .AddEnvironmentVariables()
     .Build();
 
+var provider = tempConfig["Database:Provider"] ?? "Oracle";
 var logBase = Path.Combine(SolutionRoot(), "logs", "mcpserver");
 
 Log.Logger = new LoggerConfiguration()
@@ -39,10 +40,11 @@ try
         });
         host.Services.AddSerilog();
         ConfigureServices(host.Services, host.Configuration);
-        host.Services
-            .AddMcpServer()
-            .WithTools<OracleAnalyticsTools>()
-            .WithStdioServerTransport();
+        var mcpBuilderStdio = host.Services.AddMcpServer().WithStdioServerTransport();
+        if (provider == "SqlServer")
+            mcpBuilderStdio.WithTools<SqlServerAnalyticsTools>();
+        else
+            mcpBuilderStdio.WithTools<OracleAnalyticsTools>();
 
         using var h = host.Build();
         await h.RunAsync();
@@ -56,10 +58,11 @@ try
     });
     builder.Host.UseSerilog();
     ConfigureServices(builder.Services, builder.Configuration);
-    builder.Services
-        .AddMcpServer()
-        .WithTools<OracleAnalyticsTools>()
-        .WithHttpTransport();
+    var mcpBuilderHttp = builder.Services.AddMcpServer().WithHttpTransport();
+    if (provider == "SqlServer")
+        mcpBuilderHttp.WithTools<SqlServerAnalyticsTools>();
+    else
+        mcpBuilderHttp.WithTools<OracleAnalyticsTools>();
 
     var app = builder.Build();
     app.MapMcp("/mcp");
