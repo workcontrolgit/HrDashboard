@@ -92,6 +92,9 @@ static void ConfigureServices(IServiceCollection services, IConfiguration config
         case "Oracle":
             services.AddSingleton<IHrDataBridge, OracleBridge>();
             break;
+        case "SqlServer":
+            services.AddSingleton<IHrDataBridge, SqlServerBridge>();
+            break;
         default:
             throw new InvalidOperationException(
                 $"Unrecognized Database:Provider '{provider}' — expected 'Oracle' or 'SqlServer'.");
