@@ -37,6 +37,18 @@ html, body {
     min-width: 0;
 }
 
+/* Dashboard's chat page wrapper. min-height:0 is required here: without it, this flex
+   item's automatic minimum height is its content's natural size (all messages + the
+   prompt bar), so once that exceeds .hr-center's available space the flex algorithm
+   can't shrink it — the excess overflows past .hr-center's overflow:hidden and is
+   clipped instead of becoming scrollable, silently cutting off the prompt bar/presets. */
+.hr-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
 .hr-messages {
     flex: 1;
     overflow-y: auto;

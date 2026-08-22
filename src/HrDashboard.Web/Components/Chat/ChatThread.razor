@@ -1,4 +1,6 @@
+@using Microsoft.JSInterop
 @inject ChatSessionService Session
+@inject IJSRuntime JS
 @implements IDisposable
 
 <div class="hr-messages" @ref="_scrollRef">
@@ -50,6 +52,22 @@
             StateHasChanged();
             await Task.Yield();
         });
+    }
+
+    // Keeps the transcript pinned to the latest message (including mid-stream chunks)
+    // so the user never has to scroll down manually to see new content. Runs after every
+    // render, not just OnSessionChange, since streaming chunks trigger renders directly.
+    // Best-effort: a JS interop failure (e.g. during prerendering, before the circuit's
+    // JS side is attached) must never break the chat UI.
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("hrDashboard.scrollToBottom", _scrollRef);
+        }
+        catch (JSException)
+        {
+        }
     }
 
     public void Dispose() => Session.OnChange -= OnSessionChange;
