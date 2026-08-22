@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HrDashboard.Agents.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -26,15 +27,34 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         - Custom SQL queries (SELECT only)
 
         When a user asks an HR analytics question:
-        1. Call the most appropriate tool(s) to fetch data.
-        2. Analyze the results.
-        3. Return a JSON array of HrMetricRow objects as part of your response.
+        1. Call exactly ONE tool — the single most specific one whose description matches
+           the question. Each tool call costs several seconds of real latency, so calling
+           more than one tool for a question that a single tool already answers in full is
+           a mistake, not extra thoroughness.
+        2. Once a tool's result answers the question, stop — do not call another tool to
+           double-check, cross-reference, or re-derive the same numbers a different way
+           (e.g. do not follow a summary tool with RunHrQuery for the same data). Only call
+           a second tool if the first tool's result is genuinely missing something the user
+           asked for.
+        3. Analyze the results.
+        4. Return a JSON array of HrMetricRow objects as part of your response.
 
         ALWAYS include in your final response a JSON array like:
         [{"label":"Executive","value":17000.0,"category":"AvgSalary"},...]
 
         The JSON array must appear directly in the response text (not in a code block).
         After the JSON, add a one-sentence natural language summary.
+
+        Your final response must contain ONLY the JSON array followed by the one-sentence
+        summary — nothing else. Never repeat, quote, or paraphrase the tool call you made or
+        the raw tool result payload; that data is scaffolding for you, not something to show
+        the user.
+
+        Never write narration about calling a tool — not in this turn, not in any earlier
+        turn. Do not write sentences like "Calling X tool..." or "I'll check Y..."; simply
+        invoke the tool directly. Any text you write, in any turn, is potentially shown to
+        the user, so it must always be either silence (while only calling tools) or the
+        final JSON array + one-sentence summary — never a description of what you're doing.
         """;
 
     public HrAgentService(IChatClient chatClient, string mcpServerEndpoint, ILogger<HrAgentService> logger)
@@ -151,6 +171,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
         _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
 
+        var totalStopwatch = Stopwatch.StartNew();
         var toolOptions = new ChatOptions { Tools = [.. _tools] };
         var messages = BuildMessages(history, prompt);
         bool toolsWereUsed = false;
@@ -159,7 +180,9 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
         for (int i = 0; i < MaxIterations; i++)
         {
+            var roundStopwatch = Stopwatch.StartNew();
             var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
+            _logger.LogInformation("Phase 1 round {Round}: model call took {ElapsedMs}ms", i, roundStopwatch.ElapsedMilliseconds);
 
             var calls = response.Messages
                 .SelectMany(m => m.Contents)
@@ -171,13 +194,15 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 if (!toolsWereUsed)
                 {
                     // Model answered without any tool calls — yield text directly (no extra API call)
-                    _logger.LogInformation("Agent streaming (no tools) completed in 1 round");
+                    _logger.LogInformation("Agent streaming (no tools) completed in 1 round, {ElapsedMs}ms total", totalStopwatch.ElapsedMilliseconds);
                     yield return response.Text ?? string.Empty;
                     yield break;
                 }
 
                 // Tool data is in messages; fall through to Phase 2 for streaming final answer
-                _logger.LogInformation("Agent tool-use loop done after {Rounds} round(s), streaming final answer", i);
+                _logger.LogInformation(
+                    "Agent tool-use loop done after {Rounds} round(s) in {ElapsedMs}ms, streaming final answer",
+                    i, totalStopwatch.ElapsedMilliseconds);
                 break;
             }
 
@@ -196,19 +221,29 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
             foreach (var call in calls)
             {
-                _logger.LogDebug("Tool call: {Tool}", call.Name);
+                var toolStopwatch = Stopwatch.StartNew();
                 var result = await InvokeToolAsync(call, ct);
+                _logger.LogInformation("Tool call {Tool} took {ElapsedMs}ms", call.Name, toolStopwatch.ElapsedMilliseconds);
                 messages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(call.CallId, result)]));
             }
         }
 
         // Phase 2: stream the final summarization over the accumulated tool context
+        var phase2Stopwatch = Stopwatch.StartNew();
+        var chunkCount = 0;
         await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
+            {
+                chunkCount++;
                 yield return update.Text;
+            }
         }
+
+        _logger.LogInformation(
+            "Agent streaming final answer complete: {ChunkCount} chunk(s), phase 2 took {Phase2Ms}ms, {TotalMs}ms total",
+            chunkCount, phase2Stopwatch.ElapsedMilliseconds, totalStopwatch.ElapsedMilliseconds);
     }
 
     private async Task<object?> InvokeToolAsync(FunctionCallContent call, CancellationToken ct)

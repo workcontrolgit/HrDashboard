@@ -8,7 +8,7 @@ namespace HrDashboard.McpServer.Tools;
 public sealed class HrAnalyticsTools(IOracleBridge oracle)
 {
     [McpServerTool(Name = "GetTopEarnersByDepartment"),
-     Description("Returns the top N highest-paid employees grouped by department. Returns JSON array with EmployeeName, DepartmentName, Salary.")]
+     Description("Returns the top N highest-paid employees grouped by department. Returns JSON array with EmployeeName, DepartmentName, Salary. This is the complete answer for 'top/highest-paid employees' questions — do not follow up with another tool for the same data.")]
     public async Task<string> GetTopEarnersByDepartment(
         [Description("Number of top earners to return (default 10)")] int topN = 10,
         CancellationToken ct = default)
@@ -33,7 +33,7 @@ public sealed class HrAnalyticsTools(IOracleBridge oracle)
     }
 
     [McpServerTool(Name = "GetSalaryBreakdownByDepartment"),
-     Description("Returns average, min, and max salary per department. Returns JSON array with DepartmentName, AvgSalary, MinSalary, MaxSalary, HeadCount.")]
+     Description("Returns the average salary per department, sorted highest to lowest. Returns JSON array with DepartmentName and AvgSalary only — no min/max/headcount. This is the complete answer for 'average salary by department' questions — do not follow up with RunHrQuery or another tool for the same data.")]
     public async Task<string> GetSalaryBreakdownByDepartment(CancellationToken ct = default)
     {
         const string sql = """
@@ -53,7 +53,7 @@ public sealed class HrAnalyticsTools(IOracleBridge oracle)
     }
 
     [McpServerTool(Name = "GetDeptHeadcount"),
-     Description("Returns headcount per department sorted descending.")]
+     Description("Returns headcount per department sorted descending. This is the complete answer for 'headcount by department' questions — do not follow up with another tool for the same data.")]
     public async Task<string> GetDeptHeadcount(CancellationToken ct = default)
     {
         const string sql = """
@@ -72,7 +72,7 @@ public sealed class HrAnalyticsTools(IOracleBridge oracle)
     }
 
     [McpServerTool(Name = "GetJobSalaryRanges"),
-     Description("Returns min and max salary bands per job title from the JOBS table.")]
+     Description("Returns min and max salary bands per job title from the JOBS table. This is the complete answer for 'job salary ranges' questions — do not follow up with another tool for the same data.")]
     public async Task<string> GetJobSalaryRanges(CancellationToken ct = default)
     {
         const string sql = """
@@ -89,7 +89,7 @@ public sealed class HrAnalyticsTools(IOracleBridge oracle)
     }
 
     [McpServerTool(Name = "RunHrQuery"),
-     Description("Executes an arbitrary read-only SQL query against the HR schema. Use for custom analytics not covered by other tools. Only SELECT statements are permitted.")]
+     Description("Last-resort tool for custom analytics that none of the other tools cover. Do NOT use this to re-fetch, verify, or supplement data another tool already returned — if a more specific tool answers the question, use only that one. Only SELECT statements are permitted.")]
     public async Task<string> RunHrQuery(
         [Description("A valid SELECT SQL statement targeting the HR schema (EMPLOYEES, DEPARTMENTS, JOBS, LOCATIONS)")] string sql,
         CancellationToken ct = default)

@@ -1,5 +1,8 @@
 @inherits LayoutComponentBase
 @inject NavigationManager Nav
+@inject IDialogService DialogService
+@inject ChatSessionService Session
+@inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider AuthStateProvider
 
 <MudThemeProvider />
 <MudPopoverProvider />
@@ -50,6 +53,10 @@
     <div class="hr-right @(_rightOpen ? "" : "collapsed")">
         <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid rgba(0,0,0,0.12)">
             <MudText Typo="Typo.subtitle2" Style="flex:1">Results</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.Fullscreen"
+                           Size="Size.Small"
+                           OnClick="OpenResultsFullScreen"
+                           title="View full screen" />
             <MudIconButton Icon="@Icons.Material.Filled.ChevronRight"
                            Size="Size.Small"
                            OnClick="() => _rightOpen = false"
@@ -66,8 +73,22 @@
     private bool _leftOpen = true;
     private bool _rightOpen = true;
 
-    private void NewChat()
+    private async Task NewChat()
     {
-        Nav.NavigateTo("/", forceLoad: false);
+        // Dashboard.razor is the app's only page ("/"); navigating to it while already
+        // there is a no-op in Blazor (the router doesn't re-run lifecycle for a navigation
+        // to the identical URI), so "+" must reset session state directly instead.
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var userId = auth.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (userId is null) return;
+
+        await Session.StartNewConversationAsync(userId);
+    }
+
+    private async Task OpenResultsFullScreen()
+    {
+        var parameters = new DialogParameters { [nameof(ResultsPanel.FullScreen)] = true };
+        var options = new DialogOptions { FullScreen = true, CloseButton = true };
+        await DialogService.ShowAsync<ResultsPanel>("Results", parameters, options);
     }
 }

@@ -56,4 +56,92 @@ public class HrMetricParserTests
         var result = HrMetricParser.Parse("[not valid json{{");
         result.Should().BeEmpty();
     }
+
+    [Fact]
+    public void Parse_ToolCallScaffoldingBeforePayload_ExtractsRealArray()
+    {
+        // Reproduces a local-LLM (Ollama) quirk: the model echoes back the raw tool-call
+        // announcement and OllamaSharp's serialized FunctionResultContent (which itself embeds
+        // a nested JSON array under "content") before finally emitting the intended payload.
+        // Naive first-'['-to-last-']' slicing would previously span both blobs and fail to parse.
+        const string text = """
+            {"name": "Employee salary data by department", "arguments": {}}
+
+            {"CallId":"7a1b2c3d","Result":{"content":[{"type":"text","text":"Department: HR | Avg Salary: 9500.0"}],"isError":false}}
+
+            [{"label":"HR","value":9500.0,"category":"AvgSalary"}]
+            The average salary for HR is $9,500.
+            """;
+
+        var result = HrMetricParser.Parse(text);
+
+        result.Should().HaveCount(1);
+        result[0].Label.Should().Be("HR");
+        result[0].Value.Should().Be(9500.0);
+    }
+
+    [Fact]
+    public void StripScaffolding_ToolCallJsonBeforePayload_RemovesPreamble()
+    {
+        const string text = """
+            {"name": "Employee salary data by department", "arguments": {}}
+
+            {"CallId":"7a1b2c3d","Result":{"content":[{"type":"text","text":"..."}],"isError":false}}
+
+            [{"label":"HR","value":9500.0,"category":"AvgSalary"}]
+            The average salary for HR is $9,500.
+            """;
+
+        var result = HrMetricParser.StripScaffolding(text);
+
+        result.Should().StartWith("""[{"label":"HR","value":9500.0,"category":"AvgSalary"}]""");
+        result.Should().NotContain("CallId");
+        result.Should().NotContain("arguments");
+    }
+
+    [Fact]
+    public void StripScaffolding_NoMetricsArray_ReturnsTextUnchanged()
+    {
+        const string text = "Just a conversational answer with no data.";
+
+        HrMetricParser.StripScaffolding(text).Should().Be(text);
+    }
+
+    [Fact]
+    public void ExtractDisplayText_ArrayFollowedBySummary_ReturnsOnlySummary()
+    {
+        const string text = """
+            [{"label":"Administration","value":19333.33,"category":"AvgSalary","headcount":3},{"label":"IT","value":7500.0,"category":"AvgSalary","headcount":2}]
+            Administration has an average salary of $19,333.33 (3 employees) and IT has an average salary of $7,500.00 (2 employees).
+            """;
+
+        var result = HrMetricParser.ExtractDisplayText(text);
+
+        result.Should().Be("Administration has an average salary of $19,333.33 (3 employees) and IT has an average salary of $7,500.00 (2 employees).");
+    }
+
+    [Fact]
+    public void ExtractDisplayText_ScaffoldingThenArrayThenSummary_ReturnsOnlySummary()
+    {
+        const string text = """
+            {"name": "Employee salary data by department", "arguments": {}}
+
+            {"CallId":"7a1b2c3d","Result":{"content":[{"type":"text","text":"..."}],"isError":false}}
+
+            [{"label":"HR","value":9500.0,"category":"AvgSalary"}]
+            The average salary for HR is $9,500.
+            """;
+
+        var result = HrMetricParser.ExtractDisplayText(text);
+
+        result.Should().Be("The average salary for HR is $9,500.");
+    }
+
+    [Fact]
+    public void ExtractDisplayText_NoMetricsArray_ReturnsTextUnchanged()
+    {
+        const string text = "Just a conversational answer with no data.";
+
+        HrMetricParser.ExtractDisplayText(text).Should().Be(text);
+    }
 }

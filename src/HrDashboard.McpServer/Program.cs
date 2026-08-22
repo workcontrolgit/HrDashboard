@@ -85,7 +85,10 @@ static string SolutionRoot()
 
 static void ConfigureServices(IServiceCollection services, IConfiguration config)
 {
-    // OracleBridge: singleton IHostedService — starts sql -mcp subprocess at startup
+    // OracleBridge: singleton IHostedService — starts sql -mcp subprocess at startup.
+    // HrAnalyticsTools depends on IOracleBridge, so the interface must resolve to the
+    // same singleton instance, not just the concrete type.
     services.AddSingleton<OracleBridge>();
+    services.AddSingleton<IOracleBridge>(sp => sp.GetRequiredService<OracleBridge>());
     services.AddHostedService(sp => sp.GetRequiredService<OracleBridge>());
 }

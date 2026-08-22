@@ -1,12 +1,15 @@
+using System.Diagnostics;
 using System.Text.Json;
 using HrDashboard.Agents;
 using HrDashboard.Agents.Models;
+using Microsoft.JSInterop;
 
 namespace HrDashboard.Web.Services;
 
 public class ChatSessionService(
     IHrAgentService agent,
     IConversationRepository repo,
+    IJSRuntime js,
     ILogger<ChatSessionService> logger)
 {
     public ConversationSummary? CurrentConversation { get; private set; }
@@ -113,29 +116,62 @@ public class ChatSessionService(
         CurrentMetrics = [];
         Notify();
 
+        var totalStopwatch = Stopwatch.StartNew();
+
         try
         {
             // Fetch agent context (text only — no MetricsJson)
             var history = await repo.GetMessagesForAgentAsync(conversationId, ct);
 
             // Stream response chunks
+            var streamStopwatch = Stopwatch.StartNew();
             await foreach (var chunk in agent.AskStreamAsync(history, prompt, ct))
             {
                 assistantVm.Content += chunk;
                 Notify();
             }
+            logger.LogInformation("SendAsync: agent.AskStreamAsync took {ElapsedMs}ms", streamStopwatch.ElapsedMilliseconds);
 
-            // Parse metrics from completed response
-            var metrics = HrMetricParser.Parse(assistantVm.Content);
+            // Strip any tool-call/tool-result scaffolding the local LLM may have echoed
+            // before the intended payload, then parse metrics from the cleaned response.
+            var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);
+            var metrics = HrMetricParser.Parse(cleaned);
             assistantVm.Metrics = metrics;
             CurrentMetrics = metrics;
 
+            if (metrics.Count == 0)
+            {
+                // Per SystemPrompt, every response must include a JSON metrics array — if
+                // none was found, the model emitted narration/scaffolding instead of a real
+                // answer (e.g. "Calling RunHrQuery tool..." left dangling with nothing after
+                // it) rather than a genuine data-free reply. Don't show that raw fragment to
+                // the user; log the full text for diagnosis and show an honest fallback.
+                logger.LogWarning(
+                    "No HrMetricRow array found in assistant response for \"{Prompt}\" — raw text: {RawText}",
+                    prompt, cleaned);
+                assistantVm.Content = "I couldn't put together a clear summary for that — try rephrasing the question.";
+            }
+            else
+            {
+                // The JSON array already backs the chart via CurrentMetrics — showing it again
+                // in the chat transcript is redundant and confusing, so the bubble keeps only
+                // the natural-language summary. The raw payload is still available for
+                // debugging in the browser console instead.
+                assistantVm.Content = HrMetricParser.ExtractDisplayText(cleaned);
+            }
+
+            var consoleLogStopwatch = Stopwatch.StartNew();
+            await LogMetricsToConsoleAsync(metrics);
+            logger.LogInformation("SendAsync: console-log JS interop took {ElapsedMs}ms", consoleLogStopwatch.ElapsedMilliseconds);
+
             // Persist assistant message with MetricsJson
+            var persistStopwatch = Stopwatch.StartNew();
             var metricsJson = metrics.Count > 0
                 ? JsonSerializer.Serialize(metrics)
                 : null;
             await repo.AddMessageAsync(
                 conversationId, MessageRole.Assistant, assistantVm.Content, metricsJson, ct);
+            logger.LogInformation("SendAsync: persist assistant message took {ElapsedMs}ms", persistStopwatch.ElapsedMilliseconds);
 
             // Auto-title on first exchange
             if (Messages.Count == 2 && CurrentConversation.Title == "New conversation")
@@ -155,9 +191,27 @@ public class ChatSessionService(
         {
             assistantVm.IsStreaming = false;
             IsStreaming = false;
+            logger.LogInformation("SendAsync: total {ElapsedMs}ms for prompt \"{Prompt}\"", totalStopwatch.ElapsedMilliseconds, prompt);
             Notify();
         }
     }
 
     private void Notify() => OnChange?.Invoke();
+
+    // Surfaces the raw metrics payload in the browser dev tools console instead of the
+    // chat transcript. Best-effort — a JS interop failure (e.g. during prerendering)
+    // must never break the chat response itself.
+    private async Task LogMetricsToConsoleAsync(IReadOnlyList<HrMetricRow> metrics)
+    {
+        if (metrics.Count == 0) return;
+
+        try
+        {
+            await js.InvokeVoidAsync("console.log", "[HrDashboard] metrics:", metrics);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to log metrics to browser console");
+        }
+    }
 }

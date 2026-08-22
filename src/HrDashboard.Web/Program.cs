@@ -128,6 +128,12 @@ try
 
     var app = builder.Build();
 
+    // ── Log active AI provider/model so it's visible without digging through config ──
+    var resolvedModel = string.Equals(provider, "AzureOpenAI", StringComparison.OrdinalIgnoreCase)
+        ? builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o"
+        : builder.Configuration["AI:Ollama:Model"] ?? "llama3.1";
+    Log.Information("AI provider: {Provider} | Model: {Model}", provider, resolvedModel);
+
     // ── Auto-migrate on startup ───────────────────────────────────────────────
     await using (var db = await app.Services
         .GetRequiredService<IDbContextFactory<AppDbContext>>()

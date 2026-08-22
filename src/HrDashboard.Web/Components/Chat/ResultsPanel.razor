@@ -23,8 +23,10 @@ else
     <MudChart ChartType="_chartType"
               ChartSeries="@_chartSeries"
               XAxisLabels="@_chartLabels"
+              InputData="@_inputData"
+              InputLabels="@_chartLabels"
               Width="100%"
-              Height="220px"
+              Height="@(FullScreen ? "480px" : "220px")"
               Class="mb-4" />
 
     <MudText Typo="Typo.subtitle2" Class="mb-2">
@@ -46,12 +48,20 @@ else
 }
 
 @code {
+    /// <summary>When true (shown inside the full-screen results dialog), the chart renders taller.</summary>
+    [Parameter] public bool FullScreen { get; set; }
+
     private ChartType _chartType = ChartType.Bar;
     private List<ChartSeries> _chartSeries = [];
     private string[] _chartLabels = [];
+    private double[] _inputData = [];
 
     protected override void OnInitialized()
     {
+        // Sync to whatever metrics already exist (e.g. this instance was just created
+        // inside the full-screen results dialog, after the sidebar's ResultsPanel already
+        // has data) — subscribing alone only catches *future* changes, not current state.
+        BuildChart();
         Session.OnChange += OnSessionChange;
     }
 
@@ -67,6 +77,7 @@ else
         {
             _chartSeries = [];
             _chartLabels = [];
+            _inputData = [];
             return;
         }
 
@@ -74,12 +85,16 @@ else
             .Select(r => r.Label.Length <= 18 ? r.Label : r.Label[..18] + "…")
             .ToArray();
 
+        // Bar/Line/StackedBar read ChartSeries + XAxisLabels; Donut/Pie instead read
+        // InputData + InputLabels — MudChart does not share one data model across chart types.
+        _inputData = Session.CurrentMetrics.Select(r => r.Value).ToArray();
+
         _chartSeries =
         [
             new ChartSeries
             {
                 Name = "Value",
-                Data = Session.CurrentMetrics.Select(r => r.Value).ToArray()
+                Data = _inputData
             }
         ];
     }

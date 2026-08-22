@@ -17,7 +17,7 @@
         }
         else
         {
-            <div class="msg-assistant @(msg.IsStreaming && string.IsNullOrEmpty(msg.Content) ? "msg-streaming" : "")">
+            <div class="msg-assistant">
                 @if (string.IsNullOrEmpty(msg.Content) && msg.IsStreaming)
                 {
                     <MudProgressCircular Size="Size.Small" Indeterminate="true" />
