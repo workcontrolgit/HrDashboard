@@ -31,7 +31,8 @@ public sealed class SqlServerBridge : IHrDataBridge
 
     public Task<string> DescribeTableAsync(string tableName, CancellationToken ct = default)
     {
-        if (!_visibleTables.Contains(tableName, StringComparer.OrdinalIgnoreCase))
+        var canonical = _visibleTables.FirstOrDefault(t => t.Equals(tableName, StringComparison.OrdinalIgnoreCase));
+        if (canonical is null)
             return Task.FromResult("[Rejected: table not in the allowed HR table list]");
 
         const string sql = """
@@ -40,7 +41,7 @@ public sealed class SqlServerBridge : IHrDataBridge
             WHERE TABLE_NAME = @t0
             ORDER BY ORDINAL_POSITION
             """;
-        return ExecuteAsync(sql, new Dictionary<string, object> { ["t0"] = tableName }, ct);
+        return ExecuteAsync(sql, new Dictionary<string, object> { ["t0"] = canonical }, ct);
     }
 
     private async Task<string> ExecuteAsync(

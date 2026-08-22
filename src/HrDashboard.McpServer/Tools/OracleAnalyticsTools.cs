@@ -97,6 +97,8 @@ public sealed class OracleAnalyticsTools(IHrDataBridge oracle)
         var trimmed = sql.TrimStart();
         if (!trimmed.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
             return "[Rejected: only SELECT statements are permitted]";
+        if (trimmed.Contains(';'))
+            return "[Rejected: multiple statements are not permitted]";
 
         return await oracle.RunSqlAsync(sql, ct);
     }

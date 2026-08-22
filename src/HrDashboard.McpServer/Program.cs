@@ -11,7 +11,6 @@ var tempConfig = new ConfigurationBuilder()
     .AddEnvironmentVariables()
     .Build();
 
-var provider = tempConfig["Database:Provider"] ?? "Oracle";
 var logBase = Path.Combine(SolutionRoot(), "logs", "mcpserver");
 
 Log.Logger = new LoggerConfiguration()
@@ -39,7 +38,7 @@ try
             ContentRootPath = AppContext.BaseDirectory
         });
         host.Services.AddSerilog();
-        ConfigureServices(host.Services, host.Configuration);
+        var provider = ConfigureServices(host.Services, host.Configuration);
         var mcpBuilderStdio = host.Services.AddMcpServer().WithStdioServerTransport();
         if (provider == "SqlServer")
             mcpBuilderStdio.WithTools<SqlServerAnalyticsTools>();
@@ -58,9 +57,9 @@ try
         ContentRootPath = AppContext.BaseDirectory
     });
     builder.Host.UseSerilog();
-    ConfigureServices(builder.Services, builder.Configuration);
+    var httpProvider = ConfigureServices(builder.Services, builder.Configuration);
     var mcpBuilderHttp = builder.Services.AddMcpServer().WithHttpTransport();
-    if (provider == "SqlServer")
+    if (httpProvider == "SqlServer")
         mcpBuilderHttp.WithTools<SqlServerAnalyticsTools>();
     else
         mcpBuilderHttp.WithTools<OracleAnalyticsTools>();
@@ -88,7 +87,7 @@ static string SolutionRoot()
     return dir?.FullName ?? AppContext.BaseDirectory;
 }
 
-static void ConfigureServices(IServiceCollection services, IConfiguration config)
+static string ConfigureServices(IServiceCollection services, IConfiguration config)
 {
     var provider = config["Database:Provider"] ?? "Oracle";
 
@@ -104,4 +103,6 @@ static void ConfigureServices(IServiceCollection services, IConfiguration config
             throw new InvalidOperationException(
                 $"Unrecognized Database:Provider '{provider}' — expected 'Oracle' or 'SqlServer'.");
     }
+
+    return provider;
 }

@@ -16,7 +16,7 @@ public sealed class SqlServerAnalyticsTools(IHrDataBridge sqlServer)
         var sql = $"""
             SELECT (
                 SELECT TOP ({topN})
-                    e.first_name + ' ' + e.last_name AS label,
+                    CONCAT(e.first_name, ' ', e.last_name) AS label,
                     e.salary AS value,
                     ISNULL(d.department_name, 'No Department') AS category
                 FROM employees e
@@ -91,6 +91,8 @@ public sealed class SqlServerAnalyticsTools(IHrDataBridge sqlServer)
         var trimmed = sql.TrimStart();
         if (!trimmed.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
             return "[Rejected: only SELECT statements are permitted]";
+        if (trimmed.Contains(';'))
+            return "[Rejected: multiple statements are not permitted]";
 
         return await sqlServer.RunSqlAsync(sql, ct);
     }
