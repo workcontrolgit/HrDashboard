@@ -41,7 +41,7 @@ try
         ConfigureServices(host.Services, host.Configuration);
         host.Services
             .AddMcpServer()
-            .WithTools<HrAnalyticsTools>()
+            .WithTools<OracleAnalyticsTools>()
             .WithStdioServerTransport();
 
         using var h = host.Build();
@@ -58,7 +58,7 @@ try
     ConfigureServices(builder.Services, builder.Configuration);
     builder.Services
         .AddMcpServer()
-        .WithTools<HrAnalyticsTools>()
+        .WithTools<OracleAnalyticsTools>()
         .WithHttpTransport();
 
     var app = builder.Build();

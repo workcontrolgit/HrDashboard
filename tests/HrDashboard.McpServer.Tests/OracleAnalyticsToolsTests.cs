@@ -4,13 +4,13 @@ using Xunit;
 
 namespace HrDashboard.McpServer.Tests;
 
-public class HrAnalyticsToolsTests
+public class OracleAnalyticsToolsTests
 {
     [Fact]
     public async Task GetTopEarnersByDepartment_PassesSqlToBridge_ReturnsResult()
     {
         var fake = new FakeHrDataBridge("[{\"label\":\"Alice\",\"value\":9000}]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.GetTopEarnersByDepartment(topN: 5);
 
@@ -23,7 +23,7 @@ public class HrAnalyticsToolsTests
     public async Task GetSalaryBreakdownByDepartment_PassesSqlToBridge_ReturnsResult()
     {
         var fake = new FakeHrDataBridge("[{\"label\":\"IT\",\"value\":8000}]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.GetSalaryBreakdownByDepartment();
 
@@ -36,7 +36,7 @@ public class HrAnalyticsToolsTests
     public async Task GetDeptHeadcount_PassesSqlToBridge_ReturnsResult()
     {
         var fake = new FakeHrDataBridge("[{\"label\":\"HR\",\"value\":10}]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.GetDeptHeadcount();
 
@@ -49,7 +49,7 @@ public class HrAnalyticsToolsTests
     public async Task GetJobSalaryRanges_PassesSqlToBridge_ReturnsResult()
     {
         var fake = new FakeHrDataBridge("[{\"label\":\"Manager\",\"value\":15000}]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.GetJobSalaryRanges();
 
@@ -62,7 +62,7 @@ public class HrAnalyticsToolsTests
     public async Task RunHrQuery_SelectStatement_PassesToBridge()
     {
         var fake = new FakeHrDataBridge("[{\"label\":\"test\",\"value\":1}]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
         const string sql = "SELECT employee_id FROM employees";
 
         var result = await tools.RunHrQuery(sql);
@@ -76,7 +76,7 @@ public class HrAnalyticsToolsTests
     public async Task RunHrQuery_NonSelect_RejectsWithoutCallingBridge()
     {
         var fake = new FakeHrDataBridge("should not be returned");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.RunHrQuery("DELETE FROM employees");
 
@@ -88,7 +88,7 @@ public class HrAnalyticsToolsTests
     public async Task RunHrQuery_SelectWithLeadingWhitespace_Accepted()
     {
         var fake = new FakeHrDataBridge("[]");
-        var tools = new HrAnalyticsTools(fake);
+        var tools = new OracleAnalyticsTools(fake);
 
         var result = await tools.RunHrQuery("   SELECT 1 FROM dual");
 
