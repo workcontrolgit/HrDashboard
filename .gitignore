@@ -16,3 +16,6 @@ logs/
 .claude/
 .codegraph/
 .wolf/
+
+# Playwright MCP scratch output (screenshots, console/network logs from testing sessions)
+.playwright-mcp/
