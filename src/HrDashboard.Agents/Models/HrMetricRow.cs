@@ -137,13 +137,36 @@ public static class HrMetricParser
         var start = cleaned.IndexOf('[');
         var end   = cleaned.LastIndexOf(']');
 
-        if (start < 0 || end <= start) return false;
+        if (start >= 0 && end > start)
+        {
+            var json = cleaned[start..(end + 1)];
+            try
+            {
+                metrics = JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+                return true;
+            }
+            catch
+            {
+                // Fall through to the bare-object fallback below.
+            }
+        }
 
-        var json = cleaned[start..(end + 1)];
+        // The model occasionally forgets to wrap a single row in [ ] and emits a bare
+        // {"label":...} object instead (confirmed live 2026-08-23, meta/llama-3.1-8b-instruct
+        // answering "who are you"). Treat a lone object as a one-element array rather than
+        // failing the whole response.
+        var objStart = cleaned.IndexOf('{');
+        if (objStart < 0) return false;
+
+        var objEnd = FindMatchingBrace(cleaned, objStart);
+        if (objEnd < 0) return false;
 
         try
         {
-            metrics = JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+            var single = JsonSerializer.Deserialize<HrMetricRow>(cleaned[objStart..(objEnd + 1)], _opts);
+            if (single is null) return false;
+
+            metrics = [single];
             return true;
         }
         catch
@@ -163,13 +186,25 @@ public static class HrMetricParser
         if (string.IsNullOrEmpty(llmText)) return llmText;
 
         var cleaned = StripScaffolding(llmText);
+
         var start = cleaned.IndexOf('[');
-        if (start < 0) return cleaned;
+        if (start >= 0)
+        {
+            var end = FindMatchingBracket(cleaned, start);
+            if (end >= 0) return cleaned[(end + 1)..].Trim();
+        }
 
-        var end = FindMatchingBracket(cleaned, start);
-        if (end < 0) return cleaned;
+        // Mirrors TryParse's bare-object fallback: a lone {"label":...} object (no [ ]) is
+        // still the metrics payload, not part of the natural-language summary — strip it the
+        // same way, rather than leaking the raw JSON into the chat bubble.
+        var objStart = cleaned.IndexOf('{');
+        if (objStart >= 0)
+        {
+            var objEnd = FindMatchingBrace(cleaned, objStart);
+            if (objEnd >= 0) return cleaned[(objEnd + 1)..].Trim();
+        }
 
-        return cleaned[(end + 1)..].Trim();
+        return cleaned;
     }
 
     /// <summary>
@@ -193,6 +228,32 @@ public static class HrMetricParser
 
             if (c == '[') depth++;
             else if (c == ']' && --depth == 0) return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Finds the index of the '}' that closes the '{' at <paramref name="openIndex"/>,
+    /// respecting nested braces and string content. Returns -1 if unbalanced.
+    /// </summary>
+    private static int FindMatchingBrace(string text, int openIndex)
+    {
+        var depth = 0;
+        var inString = false;
+        var escapeNext = false;
+
+        for (var i = openIndex; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (escapeNext) { escapeNext = false; continue; }
+            if (c == '\\' && inString) { escapeNext = true; continue; }
+            if (c == '"') { inString = !inString; continue; }
+            if (inString) continue;
+
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return i;
         }
 
         return -1;

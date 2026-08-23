@@ -92,6 +92,36 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void TryParse_BareObjectWithoutArrayBrackets_TreatsAsSingleRowArray()
+    {
+        // Live failure (2026-08-23): asking "who are you" made the model emit a single
+        // HrMetricRow as a bare JSON object, with no surrounding [ ] at all. The old
+        // first-'['-to-last-']' extraction found no brackets whatsoever and returned
+        // found=false, discarding the response entirely even though the object itself
+        // was perfectly valid.
+        const string text = """{"label":"HR Analytics Assistant","value":0,"chartable":false}""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+        metrics[0].Label.Should().Be("HR Analytics Assistant");
+    }
+
+    [Fact]
+    public void ExtractDisplayText_BareObjectWithTrailingSummary_ReturnsOnlySummary()
+    {
+        const string text = """
+            {"label":"HR Analytics Assistant","value":0,"chartable":false}
+            I am an AI HR Analytics Assistant.
+            """;
+
+        var result = HrMetricParser.ExtractDisplayText(text);
+
+        result.Should().Be("I am an AI HR Analytics Assistant.");
+    }
+
+    [Fact]
     public void Parse_RowWithoutColumnNames_DefaultsToNull()
     {
         const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";

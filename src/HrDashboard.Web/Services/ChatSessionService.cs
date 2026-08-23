@@ -159,7 +159,15 @@ public class ChatSessionService(
                 // in the chat transcript is redundant and confusing, so the bubble keeps only
                 // the natural-language summary. The raw payload is still available for
                 // debugging in the browser console instead.
-                assistantVm.Content = HrMetricParser.ExtractDisplayText(cleaned);
+                var displayText = HrMetricParser.ExtractDisplayText(cleaned);
+
+                // The model sometimes emits only the JSON payload with no trailing summary
+                // sentence at all (confirmed live 2026-08-23, a bare-object "who are you"
+                // response) — an empty chat bubble reads as broken even though the data
+                // parsed fine, so fall back to pointing at the results panel instead.
+                assistantVm.Content = string.IsNullOrWhiteSpace(displayText)
+                    ? "Here's what I found — see the results panel for details."
+                    : displayText;
             }
 
             var consoleLogStopwatch = Stopwatch.StartNew();
