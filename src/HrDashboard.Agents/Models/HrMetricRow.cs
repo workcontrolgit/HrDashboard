@@ -9,9 +9,13 @@ namespace HrDashboard.Agents.Models;
 /// Flexible enough to represent salary averages, headcounts, pay ranges, etc.
 /// </summary>
 public record HrMetricRow(
-    [property: JsonPropertyName("label")]    string Label,
-    [property: JsonPropertyName("value")]    double Value,
-    [property: JsonPropertyName("category")] string? Category = null);
+    [property: JsonPropertyName("label")]     string Label,
+    [property: JsonPropertyName("value")]     double Value,
+    [property: JsonPropertyName("category")]  string? Category = null,
+    // Defaults true so every existing curated tool (which only ever emits genuinely
+    // chartable data) is unaffected. Only listing-style results — most likely from
+    // RunHrQuery — are expected to set this false.
+    [property: JsonPropertyName("chartable")] bool Chartable = true);
 
 public static class HrMetricParser
 {

@@ -34,6 +34,28 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void Parse_RowWithoutChartableField_DefaultsToTrue()
+    {
+        // Every existing curated tool's output predates the "chartable" field entirely —
+        // it must still parse as chartable so none of them need to change.
+        const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].Chartable.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Parse_RowWithChartableFalse_ParsesFlag()
+    {
+        const string text = """[{"label":"Steven King","value":24000.0,"category":"Administration","chartable":false}]""";
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].Chartable.Should().BeFalse();
+    }
+
+    [Fact]
     public void Parse_JsonEmbeddedInText_ExtractsRows()
     {
         const string text = """

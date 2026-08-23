@@ -10,24 +10,27 @@
 }
 else
 {
-    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
-        <MudText Typo="Typo.subtitle2">Visualization</MudText>
-        <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
-                   Variant="Variant.Outlined" Style="width:130px">
-            <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
-            <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
-            <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
-        </MudSelect>
-    </MudStack>
+    @if (_chartable)
+    {
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+            <MudText Typo="Typo.subtitle2">Visualization</MudText>
+            <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
+                       Variant="Variant.Outlined" Style="width:130px">
+                <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
+                <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
+                <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
+            </MudSelect>
+        </MudStack>
 
-    <MudChart ChartType="_chartType"
-              ChartSeries="@_chartSeries"
-              XAxisLabels="@_chartLabels"
-              InputData="@_inputData"
-              InputLabels="@_chartLabels"
-              Width="100%"
-              Height="@(FullScreen ? "480px" : "220px")"
-              Class="mb-4" />
+        <MudChart ChartType="_chartType"
+                  ChartSeries="@_chartSeries"
+                  XAxisLabels="@_chartLabels"
+                  InputData="@_inputData"
+                  InputLabels="@_chartLabels"
+                  Width="100%"
+                  Height="@(FullScreen ? "480px" : "220px")"
+                  Class="mb-4" />
+    }
 
     <MudText Typo="Typo.subtitle2" Class="mb-2">
         Data (@Session.CurrentMetrics.Count rows)
@@ -55,6 +58,7 @@ else
     private List<ChartSeries> _chartSeries = [];
     private string[] _chartLabels = [];
     private double[] _inputData = [];
+    private bool _chartable = true;
 
     protected override void OnInitialized()
     {
@@ -73,7 +77,12 @@ else
 
     private void BuildChart()
     {
-        if (Session.CurrentMetrics.Count == 0)
+        // A single response is one homogeneous result set — if the model marked any row
+        // non-chartable (e.g. a plain listing like "list employees"), treat the whole
+        // result as table-only rather than drawing a chart from a mix of shapes.
+        _chartable = Session.CurrentMetrics.Count > 0 && Session.CurrentMetrics.All(r => r.Chartable);
+
+        if (!_chartable)
         {
             _chartSeries = [];
             _chartLabels = [];
