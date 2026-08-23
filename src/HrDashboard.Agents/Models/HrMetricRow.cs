@@ -9,10 +9,18 @@ namespace HrDashboard.Agents.Models;
 /// Flexible enough to represent salary averages, headcounts, pay ranges, etc.
 /// </summary>
 public record HrMetricRow(
+    // Both default rather than being required: confirmed live 2026-08-23 that a model can
+    // omit "label" entirely (e.g. using "labelName" everywhere instead) — since Label is a
+    // reference type, a missing key with no default deserializes to null despite the
+    // non-nullable string type, and downstream code (ResultsPanel.BuildChart calling
+    // r.Label.Length) crashed the entire Blazor circuit with a NullReferenceException on
+    // that null. Value already defaulted to 0.0 implicitly (double can't be null), so this
+    // default only changes behavior for Label, but C#'s positional-record rules require
+    // every parameter after the first defaulted one to also have a default.
     [property: JsonPropertyName("label"), JsonConverter(typeof(FlexibleStringConverter))]
-    string Label,
-    [property: JsonPropertyName("value")]
-    double Value,
+    string Label = "",
+    [property: JsonPropertyName("value"), JsonConverter(typeof(FlexibleDoubleConverter))]
+    double Value = 0.0,
     [property: JsonPropertyName("category"), JsonConverter(typeof(FlexibleStringConverter))]
     string? Category = null,
     // Defaults true so every existing curated tool (which only ever emits genuinely
@@ -56,6 +64,30 @@ internal sealed class FlexibleStringConverter : JsonConverter<string?>
 
     public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value);
+}
+
+/// <summary>
+/// Reads a JSON number field leniently — confirmed live 2026-08-23: for a pure identity
+/// question ("who are you") with no real numeric metric to report, the model emitted
+/// "value":null instead of a number. Value is a non-nullable double, and strict
+/// System.Text.Json deserialization throws on a null token there, which — like
+/// <see cref="FlexibleStringConverter"/>'s failure mode — failed parsing of the *entire*
+/// array over one field. Coerces null (and numeric strings, matching the pre-existing
+/// AllowReadingFromString behavior for a plain double) to 0.0 instead of throwing.
+/// </summary>
+internal sealed class FlexibleDoubleConverter : JsonConverter<double>
+{
+    public override double Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.Number => reader.GetDouble(),
+            JsonTokenType.Null => 0.0,
+            JsonTokenType.String => double.TryParse(reader.GetString(), out var d) ? d : 0.0,
+            _ => throw new JsonException($"Cannot convert {reader.TokenType} to double.")
+        };
+
+    public override void Write(Utf8JsonWriter writer, double value, JsonSerializerOptions options) =>
+        writer.WriteNumberValue(value);
 }
 
 public static class HrMetricParser
@@ -113,13 +145,36 @@ public static class HrMetricParser
         var start = cleaned.IndexOf('[');
         var end   = cleaned.LastIndexOf(']');
 
-        if (start < 0 || end <= start) return false;
+        if (start >= 0 && end > start)
+        {
+            var json = cleaned[start..(end + 1)];
+            try
+            {
+                metrics = JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+                return true;
+            }
+            catch
+            {
+                // Fall through to the bare-object fallback below.
+            }
+        }
 
-        var json = cleaned[start..(end + 1)];
+        // The model occasionally forgets to wrap a single row in [ ] and emits a bare
+        // {"label":...} object instead (confirmed live 2026-08-23, meta/llama-3.1-8b-instruct
+        // answering "who are you"). Treat a lone object as a one-element array rather than
+        // failing the whole response.
+        var objStart = cleaned.IndexOf('{');
+        if (objStart < 0) return false;
+
+        var objEnd = FindMatchingBrace(cleaned, objStart);
+        if (objEnd < 0) return false;
 
         try
         {
-            metrics = JsonSerializer.Deserialize<List<HrMetricRow>>(json, _opts) ?? [];
+            var single = JsonSerializer.Deserialize<HrMetricRow>(cleaned[objStart..(objEnd + 1)], _opts);
+            if (single is null) return false;
+
+            metrics = [single];
             return true;
         }
         catch
@@ -127,6 +182,23 @@ public static class HrMetricParser
             return false;
         }
     }
+
+    /// <summary>
+    /// Distinguishes a genuine plain-text answer from broken/dangling structured output, for
+    /// text where <see cref="TryParse"/> already failed to find any HrMetricRow array or
+    /// object. Two very different situations both leave <c>TryParse</c> empty-handed: (1) the
+    /// model attempted JSON and it came out broken or dangling — e.g. "Calling RunHrQuery
+    /// tool..." left hanging with nothing coherent after it — vs. (2) the model correctly
+    /// decided a purely conversational question ("who are you", "what can you do") has no HR
+    /// data to report and just answered in plain English, never attempting JSON at all. Only
+    /// (2) should be shown to the user as-is. The cheap, reliable distinguisher: (1) always
+    /// leaves at least one stray '{' or '[' behind (a JSON attempt, however broken);
+    /// genuinely brace-free text is (2).
+    /// </summary>
+    public static bool LooksLikeGenuineTextAnswer(string cleanedText) =>
+        !string.IsNullOrWhiteSpace(cleanedText)
+        && !cleanedText.Contains('{')
+        && !cleanedText.Contains('[');
 
     /// <summary>
     /// Returns just the natural-language portion of the LLM's response, with the leading
@@ -139,13 +211,25 @@ public static class HrMetricParser
         if (string.IsNullOrEmpty(llmText)) return llmText;
 
         var cleaned = StripScaffolding(llmText);
+
         var start = cleaned.IndexOf('[');
-        if (start < 0) return cleaned;
+        if (start >= 0)
+        {
+            var end = FindMatchingBracket(cleaned, start);
+            if (end >= 0) return cleaned[(end + 1)..].Trim();
+        }
 
-        var end = FindMatchingBracket(cleaned, start);
-        if (end < 0) return cleaned;
+        // Mirrors TryParse's bare-object fallback: a lone {"label":...} object (no [ ]) is
+        // still the metrics payload, not part of the natural-language summary — strip it the
+        // same way, rather than leaking the raw JSON into the chat bubble.
+        var objStart = cleaned.IndexOf('{');
+        if (objStart >= 0)
+        {
+            var objEnd = FindMatchingBrace(cleaned, objStart);
+            if (objEnd >= 0) return cleaned[(objEnd + 1)..].Trim();
+        }
 
-        return cleaned[(end + 1)..].Trim();
+        return cleaned;
     }
 
     /// <summary>
@@ -169,6 +253,32 @@ public static class HrMetricParser
 
             if (c == '[') depth++;
             else if (c == ']' && --depth == 0) return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Finds the index of the '}' that closes the '{' at <paramref name="openIndex"/>,
+    /// respecting nested braces and string content. Returns -1 if unbalanced.
+    /// </summary>
+    private static int FindMatchingBrace(string text, int openIndex)
+    {
+        var depth = 0;
+        var inString = false;
+        var escapeNext = false;
+
+        for (var i = openIndex; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (escapeNext) { escapeNext = false; continue; }
+            if (c == '\\' && inString) { escapeNext = true; continue; }
+            if (c == '"') { inString = !inString; continue; }
+            if (inString) continue;
+
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return i;
         }
 
         return -1;

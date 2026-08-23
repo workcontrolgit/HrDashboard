@@ -105,9 +105,26 @@ try
             return azureClient.GetChatClient(deployment).AsIChatClient();
         }
 
+        if (string.Equals(provider, "Nvidia", StringComparison.OrdinalIgnoreCase))
+        {
+            // NVIDIA's NIM catalog (https://build.nvidia.com) exposes an OpenAI-compatible
+            // /v1/chat/completions endpoint, so the plain OpenAI client works here — just
+            // pointed at NVIDIA's base URL instead of api.openai.com.
+            var endpoint = builder.Configuration["AI:Nvidia:Endpoint"] ?? "https://integrate.api.nvidia.com/v1";
+            var model    = builder.Configuration["AI:Nvidia:Model"] ?? "meta/llama-3.1-8b-instruct";
+            var apiKey   = builder.Configuration["AI:Nvidia:ApiKey"]
+                ?? throw new InvalidOperationException("Missing AI:Nvidia:ApiKey");
+
+            var nvidiaClient = new OpenAI.OpenAIClient(
+                new System.ClientModel.ApiKeyCredential(apiKey),
+                new OpenAI.OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+
+            return nvidiaClient.GetChatClient(model).AsIChatClient();
+        }
+
         var ollamaEndpoint = builder.Configuration["AI:Ollama:Endpoint"] ?? "http://localhost:11434";
-        var model          = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
-        return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), model);
+        var ollamaModel    = builder.Configuration["AI:Ollama:Model"]    ?? "llama3.1";
+        return (IChatClient)new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel);
     });
 
     builder.Services.AddScoped<IHrAgentService>(sp =>
@@ -129,9 +146,14 @@ try
     var app = builder.Build();
 
     // ── Log active AI provider/model so it's visible without digging through config ──
-    var resolvedModel = string.Equals(provider, "AzureOpenAI", StringComparison.OrdinalIgnoreCase)
-        ? builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o"
-        : builder.Configuration["AI:Ollama:Model"] ?? "llama3.1";
+    var resolvedModel = provider switch
+    {
+        var p when string.Equals(p, "AzureOpenAI", StringComparison.OrdinalIgnoreCase) =>
+            builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o",
+        var p when string.Equals(p, "Nvidia", StringComparison.OrdinalIgnoreCase) =>
+            builder.Configuration["AI:Nvidia:Model"] ?? "meta/llama-3.1-8b-instruct",
+        _ => builder.Configuration["AI:Ollama:Model"] ?? "llama3.1"
+    };
     Log.Information("AI provider: {Provider} | Model: {Model}", provider, resolvedModel);
 
     // ── Auto-migrate on startup ───────────────────────────────────────────────

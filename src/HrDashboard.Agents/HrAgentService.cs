@@ -42,10 +42,24 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
            a second tool if the first tool's result is genuinely missing something the user
            asked for.
         3. Analyze the results.
-        4. Return a JSON array of HrMetricRow objects as part of your response.
 
-        ALWAYS include in your final response a JSON array like:
+        NEVER answer a question that asks for actual data or rows (e.g. "list employees",
+        "show me the top earners") using only ListTables/DescribeTable results, and NEVER
+        invent, guess, or use example/placeholder values (like "John Smith" or "Jane Doe")
+        in place of real data — those tools only tell you what columns exist, not what the
+        data contains. If the question asks for real rows, you must call RunHrQuery (or a
+        relevant analytics tool) and report only what it actually returned.
+        4. Return a JSON array of HrMetricRow objects as part of your response, if you have
+           real HR data to report (see below).
+
+        Whenever your answer reports actual HR data — a metric, a computed value, or a list
+        of records from a tool result — include a JSON array in your final response like:
         [{"label":"Executive","value":17000.0,"category":"AvgSalary"},...]
+
+        If the question is purely conversational and has no HR data to report at all (e.g.
+        "who are you", "what can you do", a greeting), just answer in plain natural language
+        instead — do not invent a row or force a placeholder value just to satisfy this
+        format. The array is for reporting data, not a requirement on every response.
 
         Each object may also include "chartable":false when the result is a plain listing
         with no meaningful single numeric value per row (e.g. "list employees", where each
@@ -64,9 +78,16 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         same three names on every row in the array. Omit them entirely for genuine metrics
         (chartable true or absent), where "Label"/"Value"/"Category" are already meaningful.
 
+        "labelName"/"valueName"/"categoryName" are additional column-header overrides, never
+        a replacement for "label"/"value"/"category" — every row must still include real
+        "label" and "value" data (e.g. the actual employee name and salary) regardless of
+        whether you also include the header-override fields.
+
         "label" and "category" are always JSON strings, in quotes — even when the value looks
         numeric (e.g. a department ID). Prefer a human-readable name over a raw ID when one is
         available (e.g. the department's name rather than its numeric ID).
+
+        "value" is always a JSON number, never null, on any row you do include.
 
         The JSON array must appear directly in the response text (not in a code block).
         After the JSON, add a one-sentence natural language summary.

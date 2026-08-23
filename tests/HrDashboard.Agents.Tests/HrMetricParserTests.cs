@@ -74,6 +74,54 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void Parse_ValueAsJsonNull_CoercesToZero()
+    {
+        // Live failure (2026-08-23): asking "who are you" (a pure identity question with no
+        // real numeric metric) made the model (meta/llama-3.1-8b-instruct via NVIDIA) emit
+        // "value":null instead of a number. Value is typed double (non-nullable) — strict
+        // System.Text.Json deserialization throws on a null token for a non-nullable value
+        // type, which failed TryParse for the *entire* array over one field, discarding an
+        // otherwise perfectly good "I am an AI HR Analytics Assistant..." answer.
+        const string text = """[{"label":"AI HR Analytics Assistant","value":null,"chartable":true}]""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+        metrics[0].Value.Should().Be(0.0);
+    }
+
+    [Fact]
+    public void TryParse_BareObjectWithoutArrayBrackets_TreatsAsSingleRowArray()
+    {
+        // Live failure (2026-08-23): asking "who are you" made the model emit a single
+        // HrMetricRow as a bare JSON object, with no surrounding [ ] at all. The old
+        // first-'['-to-last-']' extraction found no brackets whatsoever and returned
+        // found=false, discarding the response entirely even though the object itself
+        // was perfectly valid.
+        const string text = """{"label":"HR Analytics Assistant","value":0,"chartable":false}""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+        metrics[0].Label.Should().Be("HR Analytics Assistant");
+    }
+
+    [Fact]
+    public void ExtractDisplayText_BareObjectWithTrailingSummary_ReturnsOnlySummary()
+    {
+        const string text = """
+            {"label":"HR Analytics Assistant","value":0,"chartable":false}
+            I am an AI HR Analytics Assistant.
+            """;
+
+        var result = HrMetricParser.ExtractDisplayText(text);
+
+        result.Should().Be("I am an AI HR Analytics Assistant.");
+    }
+
+    [Fact]
     public void Parse_RowWithoutColumnNames_DefaultsToNull()
     {
         const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";
@@ -253,5 +301,60 @@ public class HrMetricParserTests
         const string text = "Just a conversational answer with no data.";
 
         HrMetricParser.ExtractDisplayText(text).Should().Be(text);
+    }
+
+    [Fact]
+    public void LooksLikeGenuineTextAnswer_PlainProseWithNoJson_ReturnsTrue()
+    {
+        // Live failure (2026-08-23): asking "what can you do" made the model answer with
+        // complete, coherent prose (a bulleted capability list) and no JSON attempt at all —
+        // a legitimate conversational answer, not the narration/scaffolding failure the
+        // generic fallback message exists to catch.
+        const string text = """
+            I can access information from the following tables: DEPARTMENTS, EMPLOYEES, JOBS, LOCATIONS.
+
+            I can perform the following actions:
+
+            - Get the list of tables in the database.
+            - Get the headcount of a specific department.
+            """;
+
+        HrMetricParser.LooksLikeGenuineTextAnswer(text).Should().BeTrue();
+    }
+
+    [Fact]
+    public void LooksLikeGenuineTextAnswer_DanglingToolCallJson_ReturnsFalse()
+    {
+        // A genuine bug-060-style failure: the model left broken/dangling JSON scaffolding
+        // behind with nothing coherent after it — this must still hit the generic fallback.
+        const string text = """{"name": "Employee salary data by department", "arguments": {}}""";
+
+        HrMetricParser.LooksLikeGenuineTextAnswer(text).Should().BeFalse();
+    }
+
+    [Fact]
+    public void LooksLikeGenuineTextAnswer_EmptyOrWhitespace_ReturnsFalse()
+    {
+        HrMetricParser.LooksLikeGenuineTextAnswer(string.Empty).Should().BeFalse();
+        HrMetricParser.LooksLikeGenuineTextAnswer("   ").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_RowMissingLabelKey_DefaultsToEmptyStringNotNull()
+    {
+        // Live failure (2026-08-23, meta/llama-3.1-8b-instruct): the model used "labelName"
+        // on every row but never included "label" itself, confusing the header-override
+        // field for a replacement of the actual data field. Since Label previously had no
+        // default value, System.Text.Json deserialized the missing key as null despite the
+        // non-nullable `string` type — and ResultsPanel.BuildChart's r.Label.Length call
+        // crashed with a NullReferenceException that took down the entire Blazor circuit
+        // (not just this one message). Label must never come back null from TryParse.
+        const string text = """[{"labelName":"Employee Name","valueName":"Salary"}]""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics[0].Label.Should().NotBeNull();
+        metrics[0].Label.Should().BeEmpty();
     }
 }
