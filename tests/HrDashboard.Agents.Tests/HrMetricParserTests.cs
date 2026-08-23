@@ -34,6 +34,73 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void Parse_RowWithoutChartableField_DefaultsToTrue()
+    {
+        // Every existing curated tool's output predates the "chartable" field entirely —
+        // it must still parse as chartable so none of them need to change.
+        const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].Chartable.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Parse_RowWithChartableFalse_ParsesFlag()
+    {
+        const string text = """[{"label":"Steven King","value":24000.0,"category":"Administration","chartable":false}]""";
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].Chartable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_CategoryAsJsonNumber_CoercesToString()
+    {
+        // Live failure (2026-08-23): asking "list employees" made the model emit
+        // "category":10 (the raw department ID) instead of a quoted string once the
+        // categoryName field started encouraging it to think of category as "Department ID".
+        // Category is typed string? — strict System.Text.Json deserialization throws on a
+        // number token for a string property, which previously failed TryParse for the
+        // *entire* array (not just that field), silently discarding a perfectly good listing.
+        const string text = """[{"label":"Steven King","value":24000.0,"category":10,"chartable":false}]""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+        metrics[0].Category.Should().Be("10");
+    }
+
+    [Fact]
+    public void Parse_RowWithoutColumnNames_DefaultsToNull()
+    {
+        const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].LabelName.Should().BeNull();
+        result[0].ValueName.Should().BeNull();
+        result[0].CategoryName.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_ListingRowWithColumnNames_ParsesRealFieldNames()
+    {
+        const string text = """
+            [{"label":"Steven King","value":24000.0,"category":"Administration","chartable":false,
+              "labelName":"Employee Name","valueName":"Salary","categoryName":"Department"}]
+            """;
+
+        var result = HrMetricParser.Parse(text);
+
+        result[0].LabelName.Should().Be("Employee Name");
+        result[0].ValueName.Should().Be("Salary");
+        result[0].CategoryName.Should().Be("Department");
+    }
+
+    [Fact]
     public void Parse_JsonEmbeddedInText_ExtractsRows()
     {
         const string text = """

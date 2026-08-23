@@ -47,6 +47,27 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         ALWAYS include in your final response a JSON array like:
         [{"label":"Executive","value":17000.0,"category":"AvgSalary"},...]
 
+        Each object may also include "chartable":false when the result is a plain listing
+        with no meaningful single numeric value per row (e.g. "list employees", where each
+        row is a record, not a metric) — omit "chartable" (it defaults to true) for genuine
+        metrics like averages, headcounts, or ranges, where a bar/line/donut chart makes
+        sense. When "chartable" is false, still set "label" to something identifying the row
+        (e.g. an employee's name) and "value" to any real numeric field from that row (e.g.
+        salary) rather than a placeholder — the data still needs to populate a data table
+        even though no chart is drawn from it.
+
+        When "chartable" is false, also include "labelName", "valueName", and (if used)
+        "categoryName" giving the real field names those columns hold (e.g. "labelName":
+        "Employee Name", "valueName":"Salary", "categoryName":"Department") — the results
+        table shows these as its column headers instead of the generic "Label"/"Value"/
+        "Category" so a listing reads like real data, not abstract metric axes. Repeat the
+        same three names on every row in the array. Omit them entirely for genuine metrics
+        (chartable true or absent), where "Label"/"Value"/"Category" are already meaningful.
+
+        "label" and "category" are always JSON strings, in quotes — even when the value looks
+        numeric (e.g. a department ID). Prefer a human-readable name over a raw ID when one is
+        available (e.g. the department's name rather than its numeric ID).
+
         The JSON array must appear directly in the response text (not in a code block).
         After the JSON, add a one-sentence natural language summary.
 
