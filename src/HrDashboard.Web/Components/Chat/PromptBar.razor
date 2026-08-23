@@ -1,14 +1,18 @@
+@using Microsoft.JSInterop
 @inject ChatSessionService Session
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JS
 @implements IDisposable
 
 <div class="hr-prompt-bar">
     <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
         <MudTextField @bind-Value="_prompt"
+                      InputId="prompt-textbox"
                       Placeholder="Ask an HR analytics question..."
                       Variant="Variant.Outlined"
                       FullWidth="true"
                       Lines="2"
+                      Immediate="true"
                       Disabled="Session.IsStreaming"
                       OnKeyDown="HandleKeyDown" />
         <MudIconButton Icon="@Icons.Material.Filled.Send"
@@ -16,7 +20,7 @@
                        Size="Size.Large"
                        OnClick="SendAsync"
                        Disabled="Session.IsStreaming || string.IsNullOrWhiteSpace(_prompt)"
-                       title="Send (Ctrl+Enter)" />
+                       title="Send (Enter) — Shift+Enter for new line" />
     </MudStack>
 
     <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-2" Spacing="1">
@@ -50,18 +54,32 @@
             System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("hrDashboard.preventEnterSubmit", "prompt-textbox");
+        }
+        catch (JSException)
+        {
+        }
+    }
+
     private void SelectPreset(string preset) => _prompt = preset;
 
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter" && e.CtrlKey)
+        // Shift+Enter inserts a newline (default textarea behavior); plain Enter submits.
+        if (e.Key == "Enter" && !e.ShiftKey)
             await SendAsync();
     }
 
     private async Task SendAsync()
     {
         if (string.IsNullOrWhiteSpace(_prompt) || Session.IsStreaming || _userId is null) return;
-        var prompt = _prompt;
+        var prompt = _prompt.Trim();
         _prompt = string.Empty;
         await Session.SendAsync(prompt, _userId);
     }
