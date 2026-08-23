@@ -43,9 +43,9 @@ else
                  Filterable="false"
                  SortMode="SortMode.Single">
         <Columns>
-            <PropertyColumn Property="r => r.Label"    Title="Label"    Sortable="true" />
-            <PropertyColumn Property="r => r.Value"    Title="Value"    Sortable="true" Format="N2" />
-            <PropertyColumn Property="r => r.Category" Title="Category" Sortable="true" />
+            <PropertyColumn Property="r => r.Label"    Title="@_labelTitle"    Sortable="true" />
+            <PropertyColumn Property="r => r.Value"    Title="@_valueTitle"    Sortable="true" Format="N2" />
+            <PropertyColumn Property="r => r.Category" Title="@_categoryTitle" Sortable="true" />
         </Columns>
     </MudDataGrid>
 }
@@ -59,6 +59,9 @@ else
     private string[] _chartLabels = [];
     private double[] _inputData = [];
     private bool _chartable = true;
+    private string _labelTitle = "Label";
+    private string _valueTitle = "Value";
+    private string _categoryTitle = "Category";
 
     protected override void OnInitialized()
     {
@@ -81,6 +84,14 @@ else
         // non-chartable (e.g. a plain listing like "list employees"), treat the whole
         // result as table-only rather than drawing a chart from a mix of shapes.
         _chartable = Session.CurrentMetrics.Count > 0 && Session.CurrentMetrics.All(r => r.Chartable);
+
+        // Listing-style results carry their real field names (e.g. "Name"/"Salary") on
+        // every row for exactly this purpose; genuine metrics leave them null and keep the
+        // generic headers, which already mean something for an actual Label/Value/Category.
+        var first = Session.CurrentMetrics.FirstOrDefault();
+        _labelTitle = first?.LabelName ?? "Label";
+        _valueTitle = first?.ValueName ?? "Value";
+        _categoryTitle = first?.CategoryName ?? "Category";
 
         if (!_chartable)
         {
