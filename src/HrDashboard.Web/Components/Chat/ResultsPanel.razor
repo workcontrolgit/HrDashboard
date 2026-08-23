@@ -101,8 +101,14 @@ else
             return;
         }
 
+        // r.Label defaults to "" when the model omits it, but don't trust that guarantee
+        // here too — a null Label previously crashed the entire Blazor circuit (an unhandled
+        // NullReferenceException in a component render is fatal to the circuit, not just
+        // this one message), so this call site gets its own null-safety independent of
+        // whatever HrMetricRow's current default happens to be.
         _chartLabels = Session.CurrentMetrics
-            .Select(r => r.Label.Length <= 18 ? r.Label : r.Label[..18] + "…")
+            .Select(r => r.Label ?? "")
+            .Select(label => label.Length <= 18 ? label : label[..18] + "…")
             .ToArray();
 
         // Bar/Line/StackedBar read ChartSeries + XAxisLabels; Donut/Pie instead read

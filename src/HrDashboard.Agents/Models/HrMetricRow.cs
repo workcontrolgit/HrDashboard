@@ -9,10 +9,18 @@ namespace HrDashboard.Agents.Models;
 /// Flexible enough to represent salary averages, headcounts, pay ranges, etc.
 /// </summary>
 public record HrMetricRow(
+    // Both default rather than being required: confirmed live 2026-08-23 that a model can
+    // omit "label" entirely (e.g. using "labelName" everywhere instead) — since Label is a
+    // reference type, a missing key with no default deserializes to null despite the
+    // non-nullable string type, and downstream code (ResultsPanel.BuildChart calling
+    // r.Label.Length) crashed the entire Blazor circuit with a NullReferenceException on
+    // that null. Value already defaulted to 0.0 implicitly (double can't be null), so this
+    // default only changes behavior for Label, but C#'s positional-record rules require
+    // every parameter after the first defaulted one to also have a default.
     [property: JsonPropertyName("label"), JsonConverter(typeof(FlexibleStringConverter))]
-    string Label,
+    string Label = "",
     [property: JsonPropertyName("value"), JsonConverter(typeof(FlexibleDoubleConverter))]
-    double Value,
+    double Value = 0.0,
     [property: JsonPropertyName("category"), JsonConverter(typeof(FlexibleStringConverter))]
     string? Category = null,
     // Defaults true so every existing curated tool (which only ever emits genuinely
@@ -174,6 +182,23 @@ public static class HrMetricParser
             return false;
         }
     }
+
+    /// <summary>
+    /// Distinguishes a genuine plain-text answer from broken/dangling structured output, for
+    /// text where <see cref="TryParse"/> already failed to find any HrMetricRow array or
+    /// object. Two very different situations both leave <c>TryParse</c> empty-handed: (1) the
+    /// model attempted JSON and it came out broken or dangling — e.g. "Calling RunHrQuery
+    /// tool..." left hanging with nothing coherent after it — vs. (2) the model correctly
+    /// decided a purely conversational question ("who are you", "what can you do") has no HR
+    /// data to report and just answered in plain English, never attempting JSON at all. Only
+    /// (2) should be shown to the user as-is. The cheap, reliable distinguisher: (1) always
+    /// leaves at least one stray '{' or '[' behind (a JSON attempt, however broken);
+    /// genuinely brace-free text is (2).
+    /// </summary>
+    public static bool LooksLikeGenuineTextAnswer(string cleanedText) =>
+        !string.IsNullOrWhiteSpace(cleanedText)
+        && !cleanedText.Contains('{')
+        && !cleanedText.Contains('[');
 
     /// <summary>
     /// Returns just the natural-language portion of the LLM's response, with the leading

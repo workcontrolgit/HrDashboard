@@ -141,17 +141,21 @@ public class ChatSessionService(
 
             if (!arrayFound)
             {
-                // Per SystemPrompt, every response must include a JSON metrics array — if
-                // none was found, the model emitted narration/scaffolding instead of a real
-                // answer (e.g. "Calling RunHrQuery tool..." left dangling with nothing after
-                // it) rather than a genuine data-free reply. Don't show that raw fragment to
-                // the user; log the full text for diagnosis and show an honest fallback.
-                // (A genuinely empty result — the model correctly emitting "[]" for a
-                // no-rows-match answer — has arrayFound == true and is handled below instead.)
-                logger.LogWarning(
-                    "No HrMetricRow array found in assistant response for \"{Prompt}\" — raw text: {RawText}",
-                    prompt, cleaned);
-                assistantVm.Content = "I couldn't put together a clear summary for that — try rephrasing the question.";
+                // See HrMetricParser.LooksLikeGenuineTextAnswer for why this distinction
+                // matters: a purely conversational answer ("who are you") that never
+                // attempted JSON is a legitimate response, not the bug-060 narration/
+                // scaffolding failure the fallback below exists to catch.
+                if (HrMetricParser.LooksLikeGenuineTextAnswer(cleaned))
+                {
+                    assistantVm.Content = cleaned;
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "No HrMetricRow array found in assistant response for \"{Prompt}\" — raw text: {RawText}",
+                        prompt, cleaned);
+                    assistantVm.Content = "I couldn't put together a clear summary for that — try rephrasing the question.";
+                }
             }
             else
             {
