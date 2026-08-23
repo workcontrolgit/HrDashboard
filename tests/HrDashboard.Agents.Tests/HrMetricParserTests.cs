@@ -74,6 +74,24 @@ public class HrMetricParserTests
     }
 
     [Fact]
+    public void Parse_ValueAsJsonNull_CoercesToZero()
+    {
+        // Live failure (2026-08-23): asking "who are you" (a pure identity question with no
+        // real numeric metric) made the model (meta/llama-3.1-8b-instruct via NVIDIA) emit
+        // "value":null instead of a number. Value is typed double (non-nullable) — strict
+        // System.Text.Json deserialization throws on a null token for a non-nullable value
+        // type, which failed TryParse for the *entire* array over one field, discarding an
+        // otherwise perfectly good "I am an AI HR Analytics Assistant..." answer.
+        const string text = """[{"label":"AI HR Analytics Assistant","value":null,"chartable":true}]""";
+
+        var found = HrMetricParser.TryParse(text, out var metrics);
+
+        found.Should().BeTrue();
+        metrics.Should().HaveCount(1);
+        metrics[0].Value.Should().Be(0.0);
+    }
+
+    [Fact]
     public void Parse_RowWithoutColumnNames_DefaultsToNull()
     {
         const string text = """[{"label":"IT","value":8000.0,"category":"AvgSalary"}]""";

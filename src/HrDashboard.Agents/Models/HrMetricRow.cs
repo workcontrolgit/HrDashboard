@@ -11,7 +11,7 @@ namespace HrDashboard.Agents.Models;
 public record HrMetricRow(
     [property: JsonPropertyName("label"), JsonConverter(typeof(FlexibleStringConverter))]
     string Label,
-    [property: JsonPropertyName("value")]
+    [property: JsonPropertyName("value"), JsonConverter(typeof(FlexibleDoubleConverter))]
     double Value,
     [property: JsonPropertyName("category"), JsonConverter(typeof(FlexibleStringConverter))]
     string? Category = null,
@@ -56,6 +56,30 @@ internal sealed class FlexibleStringConverter : JsonConverter<string?>
 
     public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options) =>
         writer.WriteStringValue(value);
+}
+
+/// <summary>
+/// Reads a JSON number field leniently — confirmed live 2026-08-23: for a pure identity
+/// question ("who are you") with no real numeric metric to report, the model emitted
+/// "value":null instead of a number. Value is a non-nullable double, and strict
+/// System.Text.Json deserialization throws on a null token there, which — like
+/// <see cref="FlexibleStringConverter"/>'s failure mode — failed parsing of the *entire*
+/// array over one field. Coerces null (and numeric strings, matching the pre-existing
+/// AllowReadingFromString behavior for a plain double) to 0.0 instead of throwing.
+/// </summary>
+internal sealed class FlexibleDoubleConverter : JsonConverter<double>
+{
+    public override double Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.Number => reader.GetDouble(),
+            JsonTokenType.Null => 0.0,
+            JsonTokenType.String => double.TryParse(reader.GetString(), out var d) ? d : 0.0,
+            _ => throw new JsonException($"Cannot convert {reader.TokenType} to double.")
+        };
+
+    public override void Write(Utf8JsonWriter writer, double value, JsonSerializerOptions options) =>
+        writer.WriteNumberValue(value);
 }
 
 public static class HrMetricParser

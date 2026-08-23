@@ -68,6 +68,10 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         numeric (e.g. a department ID). Prefer a human-readable name over a raw ID when one is
         available (e.g. the department's name rather than its numeric ID).
 
+        "value" is always a JSON number, never null — for a row with no real numeric metric
+        (e.g. answering "who are you" or another non-data question), use 0 rather than
+        omitting it or setting it to null.
+
         The JSON array must appear directly in the response text (not in a code block).
         After the JSON, add a one-sentence natural language summary.
 
