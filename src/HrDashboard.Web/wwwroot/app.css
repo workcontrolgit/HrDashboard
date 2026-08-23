@@ -37,12 +37,15 @@ html, body {
     min-width: 0;
 }
 
-/* Dashboard's chat page wrapper. min-height:0 is required here: without it, this flex
-   item's automatic minimum height is its content's natural size (all messages + the
-   prompt bar), so once that exceeds .hr-center's available space the flex algorithm
-   can't shrink it — the excess overflows past .hr-center's overflow:hidden and is
-   clipped instead of becoming scrollable, silently cutting off the prompt bar/presets. */
-.hr-page {
+/* Generic "fill the parent flex column, then let a child scroll" wrapper — used by
+   Dashboard.razor (messages + prompt bar) and ConversationList.razor (conversation list
+   + user profile footer). min-height:0 is required: without it, this flex item's
+   automatic minimum height is its content's natural size (e.g. all messages + the
+   prompt bar), so once that content exceeds the parent's available space the flex
+   algorithm can't shrink it — the excess overflows past the parent's overflow:hidden
+   and is clipped instead of becoming scrollable, silently cutting off whatever comes
+   last (the prompt bar's presets, or the sidebar's user-profile footer). */
+.hr-fill-column {
     display: flex;
     flex-direction: column;
     height: 100%;
