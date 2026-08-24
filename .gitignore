@@ -19,3 +19,6 @@ logs/
 
 # Playwright MCP scratch output (screenshots, console/network logs from testing sessions)
 .playwright-mcp/
+
+# Local git worktrees used for isolated feature-branch work
+.worktrees/
