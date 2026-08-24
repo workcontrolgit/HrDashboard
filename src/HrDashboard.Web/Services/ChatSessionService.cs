@@ -132,6 +132,13 @@ public class ChatSessionService(
             }
             logger.LogInformation("SendAsync: agent.AskStreamAsync took {ElapsedMs}ms", streamStopwatch.ElapsedMilliseconds);
 
+            var pendingColumns = agent.LastPendingColumnOptions;
+            if (pendingColumns is not null)
+            {
+                assistantVm.PendingColumns = pendingColumns;
+                assistantVm.SelectedColumns = pendingColumns.GetDefaultSelectedColumns();
+            }
+
             // Strip any tool-call/tool-result scaffolding the local LLM may have echoed
             // before the intended payload, then parse metrics from the cleaned response.
             var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);

@@ -1,6 +1,7 @@
 @using Microsoft.JSInterop
 @inject ChatSessionService Session
 @inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
 @implements IDisposable
 
 <div class="hr-messages" @ref="_scrollRef">
@@ -32,6 +33,31 @@
                         <span class="msg-streaming"></span>
                     }
                 }
+
+                @if (msg.PendingColumns is not null)
+                {
+                    <MudStack Row="true" Wrap="Wrap.Wrap" Spacing="1" Class="mt-2">
+                        @foreach (var column in msg.PendingColumns.Columns)
+                        {
+                            var isSelected = msg.SelectedColumns?.Contains(column) == true;
+                            <MudChip T="string"
+                                     Color="@(isSelected ? Color.Primary : Color.Default)"
+                                     Variant="@(isSelected ? Variant.Filled : Variant.Outlined)"
+                                     Size="Size.Small"
+                                     Disabled="@(msg.ColumnsConfirmed || Session.IsStreaming)"
+                                     OnClick="@(() => ToggleColumn(msg, column))">
+                                @column
+                            </MudChip>
+                        }
+                        <MudChip T="string"
+                                 Color="Color.Success"
+                                 Size="Size.Small"
+                                 Disabled="@(msg.ColumnsConfirmed || Session.IsStreaming || msg.SelectedColumns is null || msg.SelectedColumns.Count == 0)"
+                                 OnClick="@(() => ConfirmColumnsAsync(msg))">
+                            Show results
+                        </MudChip>
+                    </MudStack>
+                }
             </div>
         }
     }
@@ -39,10 +65,14 @@
 
 @code {
     private ElementReference _scrollRef;
+    private string? _userId;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         Session.OnChange += OnSessionChange;
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        _userId = auth.User.FindFirst(
+            System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
     }
 
     private void OnSessionChange()
@@ -52,6 +82,24 @@
             StateHasChanged();
             await Task.Yield();
         });
+    }
+
+    private void ToggleColumn(HrDashboard.Web.Services.MessageViewModel msg, string column)
+    {
+        if (msg.ColumnsConfirmed || msg.SelectedColumns is null) return;
+
+        if (!msg.SelectedColumns.Remove(column))
+            msg.SelectedColumns.Add(column);
+    }
+
+    private async Task ConfirmColumnsAsync(HrDashboard.Web.Services.MessageViewModel msg)
+    {
+        if (msg.ColumnsConfirmed || msg.SelectedColumns is null || msg.SelectedColumns.Count == 0 || _userId is null)
+            return;
+
+        msg.ColumnsConfirmed = true;
+        var columnList = string.Join(", ", msg.SelectedColumns);
+        await Session.SendAsync($"Show columns: {columnList}", _userId);
     }
 
     // Keeps the transcript pinned to the latest message (including mid-stream chunks)
