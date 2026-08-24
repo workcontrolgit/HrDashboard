@@ -23,6 +23,10 @@
                            Color="Color.Primary"
                            OnClick="NewChat"
                            title="New conversation" />
+            <MudIconButton Icon="@Icons.Material.Filled.Insights"
+                           Size="Size.Small"
+                           OnClick="OpenUsageDashboard"
+                           title="Usage" />
         </div>
         <ConversationList OnNewChat="NewChat" />
     </div>
@@ -90,5 +94,11 @@
         var parameters = new DialogParameters { [nameof(ResultsPanel.FullScreen)] = true };
         var options = new DialogOptions { FullScreen = true, CloseButton = true };
         await DialogService.ShowAsync<ResultsPanel>("Results", parameters, options);
+    }
+
+    private async Task OpenUsageDashboard()
+    {
+        var options = new DialogOptions { FullScreen = true, CloseButton = true };
+        await DialogService.ShowAsync<UsageDashboard>("Usage", options);
     }
 }

@@ -1,0 +1,73 @@
+@using HrDashboard.Agents
+@inject IUsageRepository UsageRepo
+@inject AuthenticationStateProvider AuthStateProvider
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (_dailyTotals.Count == 0 && _breakdown.Count == 0)
+{
+    <MudText Typo="Typo.body1">No usage recorded yet — ask a few questions in the chat and check back here.</MudText>
+}
+else
+{
+    <MudText Typo="Typo.subtitle1" Class="mb-2">Tokens per day (last 30 days)</MudText>
+    <MudChart ChartType="ChartType.Bar"
+              ChartSeries="@_chartSeries"
+              XAxisLabels="@_chartLabels"
+              Width="100%"
+              Height="260px"
+              Class="mb-6" />
+
+    <MudText Typo="Typo.subtitle1" Class="mb-2">By provider / model</MudText>
+    <MudDataGrid T="ProviderModelUsageTotal"
+                 Items="_breakdown"
+                 Dense="true"
+                 Striped="true"
+                 Hover="true"
+                 SortMode="SortMode.Single">
+        <Columns>
+            <PropertyColumn Property="r => r.Provider" Title="Provider" Sortable="true" />
+            <PropertyColumn Property="r => r.Model" Title="Model" Sortable="true" />
+            <PropertyColumn Property="r => r.InputTokens" Title="Input Tokens" Sortable="true" Format="N0" />
+            <PropertyColumn Property="r => r.OutputTokens" Title="Output Tokens" Sortable="true" Format="N0" />
+            <PropertyColumn Property="r => r.TotalTokens" Title="Total Tokens" Sortable="true" Format="N0" />
+            <PropertyColumn Property="r => r.TurnCount" Title="Turns" Sortable="true" />
+        </Columns>
+    </MudDataGrid>
+}
+
+@code {
+    private bool _loading = true;
+    private List<DailyUsageTotal> _dailyTotals = [];
+    private List<ProviderModelUsageTotal> _breakdown = [];
+    private List<ChartSeries> _chartSeries = [];
+    private string[] _chartLabels = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var userId = auth.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (userId is null)
+        {
+            _loading = false;
+            return;
+        }
+
+        _dailyTotals = await UsageRepo.GetDailyTotalsAsync(userId, days: 30);
+        _breakdown   = await UsageRepo.GetProviderModelBreakdownAsync(userId);
+
+        _chartLabels = _dailyTotals.Select(d => d.Date.ToString("MM/dd")).ToArray();
+        _chartSeries =
+        [
+            new ChartSeries
+            {
+                Name = "Tokens",
+                Data = _dailyTotals.Select(d => (double)d.TotalTokens).ToArray()
+            }
+        ];
+
+        _loading = false;
+    }
+}
