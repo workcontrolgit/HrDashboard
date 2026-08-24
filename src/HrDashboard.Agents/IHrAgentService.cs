@@ -32,4 +32,12 @@ public interface IHrAgentService
     /// of calling a data tool, grounded in a real DescribeTable result.
     /// </summary>
     PendingColumnOptions? LastPendingColumnOptions { get; }
+
+    /// <summary>
+    /// Returns the real table/column schema available to query, built directly from the
+    /// ListTables/DescribeTable tool results — no LLM call involved, so this costs zero
+    /// tokens and the columns can never be hallucinated. Intended for a chat-start
+    /// "what data is available" summary shown alongside the preset chips.
+    /// </summary>
+    Task<IReadOnlyList<TableOverview>> GetSchemaOverviewAsync(CancellationToken ct = default);
 }

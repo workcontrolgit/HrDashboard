@@ -230,4 +230,40 @@ public class HrAgentServiceTests
 
         sut.LastPendingColumnOptions.Should().BeNull();
     }
+
+    // ── GetSchemaOverviewAsync tests ─────────────────────────────────────────
+
+    [Fact]
+    public async Task GetSchemaOverviewAsync_ReturnsTableAndColumnsFromRealToolResults()
+    {
+        const string listTablesJson = """[{"table_name":"EMPLOYEES"}]""";
+        const string describeTableJson =
+            """[{"column_name":"EMPLOYEE_ID","data_type":"NUMBER","is_nullable":"NO"},{"column_name":"SALARY","data_type":"NUMBER","is_nullable":"YES"}]""";
+
+        Func<string> listTablesFn = () => listTablesJson;
+        Func<string, string> describeTableFn = tableName => describeTableJson;
+
+        var tools = new List<AITool>
+        {
+            AIFunctionFactory.Create(listTablesFn, "ListTables", null, null),
+            AIFunctionFactory.Create(describeTableFn, "DescribeTable", null, null)
+        };
+        var sut = new HrAgentService(Substitute.For<IChatClient>(), tools, NullLogger<HrAgentService>.Instance);
+
+        var overview = await sut.GetSchemaOverviewAsync();
+
+        overview.Should().HaveCount(1);
+        overview[0].TableName.Should().Be("EMPLOYEES");
+        overview[0].Columns.Should().Equal("EMPLOYEE_ID", "SALARY");
+    }
+
+    [Fact]
+    public async Task GetSchemaOverviewAsync_ListTablesToolMissing_ReturnsEmpty()
+    {
+        var sut = Build(Substitute.For<IChatClient>()); // empty tools list
+
+        var overview = await sut.GetSchemaOverviewAsync();
+
+        overview.Should().BeEmpty();
+    }
 }

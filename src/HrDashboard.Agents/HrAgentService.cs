@@ -340,6 +340,36 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             chunkCount, phase2Stopwatch.ElapsedMilliseconds, totalStopwatch.ElapsedMilliseconds);
     }
 
+    public async Task<IReadOnlyList<TableOverview>> GetSchemaOverviewAsync(CancellationToken ct = default)
+    {
+        await EnsureInitializedAsync(ct);
+
+        var listTablesFn = _tools.OfType<AIFunction>()
+            .FirstOrDefault(t => string.Equals(t.Name, "ListTables", StringComparison.OrdinalIgnoreCase));
+        if (listTablesFn is null) return [];
+
+        var listResult = await listTablesFn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>()), ct);
+        var listJson = SchemaJsonParser.ExtractStringResult(listResult);
+        if (listJson is null || !SchemaJsonParser.TryParseRowValues(listJson, "table_name", out var tableNames))
+            return [];
+
+        var describeFn = _tools.OfType<AIFunction>()
+            .FirstOrDefault(t => string.Equals(t.Name, "DescribeTable", StringComparison.OrdinalIgnoreCase));
+        if (describeFn is null) return [];
+
+        var overviews = new List<TableOverview>();
+        foreach (var tableName in tableNames)
+        {
+            var describeResult = await describeFn.InvokeAsync(
+                new AIFunctionArguments(new Dictionary<string, object?> { ["tableName"] = tableName }), ct);
+            var describeJson = SchemaJsonParser.ExtractStringResult(describeResult);
+            if (describeJson is not null && SchemaJsonParser.TryParseRowValues(describeJson, "column_name", out var columns))
+                overviews.Add(new TableOverview(tableName, columns));
+        }
+
+        return overviews;
+    }
+
     private async Task<object?> InvokeToolAsync(FunctionCallContent call, CancellationToken ct)
     {
         var fn = _tools.OfType<AIFunction>()

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HrDashboard.Agents.Models;
 using Microsoft.Extensions.AI;
 
@@ -32,12 +31,7 @@ internal sealed class ToolCallTracker
         if (!string.Equals(call.Name, "DescribeTable", StringComparison.OrdinalIgnoreCase))
             return;
 
-        string? json = result switch
-        {
-            string s => s,
-            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } je => je.GetString(),
-            _ => null
-        };
+        var json = SchemaJsonParser.ExtractStringResult(result);
         if (json is null || !TryParseColumnNames(json, out var columns))
             return;
 
@@ -63,37 +57,8 @@ internal sealed class ToolCallTracker
     }
 
     // DescribeTable's JSON result is a row-per-column array (see DbResultSerializer in
-    // HrDashboard.McpServer), e.g. [{"column_name":"EMPLOYEE_ID","data_type":"NUMBER",
-    // "is_nullable":"NO"},...] — the case of the "column_name" key can vary by provider,
-    // hence PropertyNameCaseInsensitive. Non-JSON error strings like
-    // "[Rejected: ...]" or "[SQL error: ...]" fail to parse and correctly yield no
-    // columns rather than throwing.
-    private static bool TryParseColumnNames(string json, out IReadOnlyList<string> columns)
-    {
-        columns = [];
-        try
-        {
-            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var rows = JsonSerializer.Deserialize<List<Dictionary<string, JsonElement>>>(json, opts);
-            if (rows is null || rows.Count == 0) return false;
-
-            var names = new List<string>();
-            foreach (var row in rows)
-            {
-                var key = row.Keys.FirstOrDefault(k => string.Equals(k, "column_name", StringComparison.OrdinalIgnoreCase));
-                if (key is null) return false;
-
-                var value = row[key].ValueKind == JsonValueKind.String ? row[key].GetString() : null;
-                if (!string.IsNullOrWhiteSpace(value)) names.Add(value);
-            }
-
-            if (names.Count == 0) return false;
-            columns = names;
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
+    // HrDashboard.McpServer). Delegates to the shared parser also used by
+    // GetSchemaOverviewAsync (see SchemaJsonParser.cs).
+    private static bool TryParseColumnNames(string json, out IReadOnlyList<string> columns) =>
+        SchemaJsonParser.TryParseRowValues(json, "column_name", out columns);
 }
