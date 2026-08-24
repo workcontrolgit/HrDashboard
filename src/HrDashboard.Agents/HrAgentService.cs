@@ -280,6 +280,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         await EnsureInitializedAsync(ct);
 
         LastPendingColumnOptions = null;
+        LastTurnUsage = null;
         _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
 
         var totalStopwatch = Stopwatch.StartNew();
@@ -289,6 +290,12 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         bool toolsWereUsed = false;
         var tracker = new ToolCallTracker();
 
+        long totalInputTokens = 0, totalOutputTokens = 0, totalTokens = 0;
+        bool anyUsageSeen = false;
+
+        TurnUsageInfo? FinalizeUsage() =>
+            anyUsageSeen ? new TurnUsageInfo(_providerName, _modelName, totalInputTokens, totalOutputTokens, totalTokens) : null;
+
         // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data.
         // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
         for (int i = 0; i < MaxIterations; i++)
@@ -296,6 +303,14 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             var roundStopwatch = Stopwatch.StartNew();
             var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
             _logger.LogInformation("Phase 1 round {Round}: model call took {ElapsedMs}ms", i, roundStopwatch.ElapsedMilliseconds);
+
+            if (response.Usage is { } roundUsage)
+            {
+                anyUsageSeen = true;
+                totalInputTokens  += roundUsage.InputTokenCount ?? 0;
+                totalOutputTokens += roundUsage.OutputTokenCount ?? 0;
+                totalTokens       += roundUsage.TotalTokenCount ?? 0;
+            }
 
             var calls = response.Messages
                 .SelectMany(m => m.Contents)
@@ -308,6 +323,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 {
                     // Model answered without any tool calls — yield text directly (no extra API call)
                     _logger.LogInformation("Agent streaming (no tools) completed in 1 round, {ElapsedMs}ms total", totalStopwatch.ElapsedMilliseconds);
+                    LastTurnUsage = FinalizeUsage();
                     yield return response.Text ?? string.Empty;
                     yield break;
                 }
@@ -324,6 +340,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             if (i == MaxIterations - 1)
             {
                 _logger.LogWarning("Agent streaming hit iteration limit for prompt: {Prompt}", prompt);
+                LastTurnUsage = FinalizeUsage();
                 yield return "[Agent reached iteration limit — rephrase your query]";
                 yield break;
             }
@@ -349,6 +366,14 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         var fullTextBuilder = new StringBuilder();
         await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
         {
+            foreach (var usageContent in update.Contents.OfType<UsageContent>())
+            {
+                anyUsageSeen = true;
+                totalInputTokens  += usageContent.Details.InputTokenCount ?? 0;
+                totalOutputTokens += usageContent.Details.OutputTokenCount ?? 0;
+                totalTokens       += usageContent.Details.TotalTokenCount ?? 0;
+            }
+
             if (!string.IsNullOrEmpty(update.Text))
             {
                 chunkCount++;
@@ -358,6 +383,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         }
 
         LastPendingColumnOptions = tracker.Classify(fullTextBuilder.ToString());
+        LastTurnUsage = FinalizeUsage();
 
         _logger.LogInformation(
             "Agent streaming final answer complete: {ChunkCount} chunk(s), phase 2 took {Phase2Ms}ms, {TotalMs}ms total",

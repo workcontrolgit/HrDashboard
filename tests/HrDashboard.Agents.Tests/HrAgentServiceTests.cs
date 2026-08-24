@@ -35,6 +35,18 @@ public class HrAgentServiceTests
         }
     }
 
+    // Helper: fake IAsyncEnumerable<ChatResponseUpdate> from full updates (not just text),
+    // for tests that need to include non-text content like UsageContent.
+    private static async IAsyncEnumerable<ChatResponseUpdate> FakeStreamUpdates(
+        params ChatResponseUpdate[] updates)
+    {
+        foreach (var update in updates)
+        {
+            yield return update;
+            await Task.CompletedTask;
+        }
+    }
+
     private static HrAgentService Build(IChatClient client)
         => new(client, [], NullLogger<HrAgentService>.Instance);
 
@@ -261,6 +273,75 @@ public class HrAgentServiceTests
             Arg.Any<IList<ChatMessage>>(),
             Arg.Is<ChatOptions?>(o => o != null && o.AllowMultipleToolCalls == false),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_AccumulatesUsageAcrossPhase1AndPhase2()
+    {
+        var client = Substitute.For<IChatClient>();
+
+        var toolCallResponseWithUsage = new ChatResponse(
+            [new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "GetData", null)])])
+        {
+            Usage = new UsageDetails { InputTokenCount = 100, OutputTokenCount = 20, TotalTokenCount = 120 }
+        };
+        var finalResponseWithUsage = new ChatResponse([new ChatMessage(ChatRole.Assistant, string.Empty)])
+        {
+            Usage = new UsageDetails { InputTokenCount = 50, OutputTokenCount = 10, TotalTokenCount = 60 }
+        };
+
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(toolCallResponseWithUsage), Task.FromResult(finalResponseWithUsage));
+
+        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(FakeStreamUpdates(
+                  new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("Hello ")]),
+                  new ChatResponseUpdate(ChatRole.Assistant,
+                      [new TextContent("world"),
+                       new UsageContent(new UsageDetails { InputTokenCount = 200, OutputTokenCount = 30, TotalTokenCount = 230 })])));
+
+        var sut = new HrAgentService(client, [], NullLogger<HrAgentService>.Instance, "TestProvider", "test-model");
+
+        await foreach (var _ in sut.AskStreamAsync([], "query")) { }
+
+        sut.LastTurnUsage.Should().NotBeNull();
+        sut.LastTurnUsage!.Provider.Should().Be("TestProvider");
+        sut.LastTurnUsage.Model.Should().Be("test-model");
+        sut.LastTurnUsage.InputTokens.Should().Be(100 + 50 + 200);
+        sut.LastTurnUsage.OutputTokens.Should().Be(20 + 10 + 30);
+        sut.LastTurnUsage.TotalTokens.Should().Be(120 + 60 + 230);
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_NoUsageReportedAnywhere_LeavesLastTurnUsageNull()
+    {
+        var client = Substitute.For<IChatClient>();
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(TextResponse("Hello world")));
+
+        var sut = Build(client);
+        await foreach (var _ in sut.AskStreamAsync([], "hi")) { }
+
+        sut.LastTurnUsage.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_IterationLimit_StillReportsUsageFromRoundsThatRan()
+    {
+        var client = Substitute.For<IChatClient>();
+        var loopingResponseWithUsage = new ChatResponse(
+            [new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "loop", null)])])
+        {
+            Usage = new UsageDetails { InputTokenCount = 10, OutputTokenCount = 5, TotalTokenCount = 15 }
+        };
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(_ => Task.FromResult(loopingResponseWithUsage));
+
+        var sut = Build(client);
+        await foreach (var _ in sut.AskStreamAsync([], "loop forever")) { }
+
+        sut.LastTurnUsage.Should().NotBeNull();
+        sut.LastTurnUsage!.TotalTokens.Should().BeGreaterThan(0);
     }
 
     // ── GetSchemaOverviewAsync tests ─────────────────────────────────────────
