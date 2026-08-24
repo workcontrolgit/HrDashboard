@@ -6,6 +6,8 @@
     is started first, then the web app, each in its own window so their
     console output stays separate and either can be stopped independently
     (Ctrl+C or closing its window).
+    Both projects run through dotnet watch so supported code and content
+    changes are applied without manually restarting the processes.
 #>
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
@@ -25,7 +27,7 @@ function Start-DevWindow {
         [string]$Title,
         [string]$ProjectPath
     )
-    $command = "$pathRefreshCommand; `$host.UI.RawUI.WindowTitle = '$Title'; dotnet run --project '$ProjectPath'"
+    $command = "$pathRefreshCommand; `$host.UI.RawUI.WindowTitle = '$Title'; dotnet watch --project '$ProjectPath' run"
     Start-Process pwsh -ArgumentList @("-NoExit", "-Command", $command)
 }
 
