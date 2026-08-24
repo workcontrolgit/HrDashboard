@@ -1207,6 +1207,41 @@ public class SchemaJsonParserTests
 
         success.Should().BeFalse();
     }
+
+    [Fact]
+    public void ExtractStringResult_RawString_ReturnsItUnchanged()
+    {
+        var result = SchemaJsonParser.ExtractStringResult("hello");
+
+        result.Should().Be("hello");
+    }
+
+    [Fact]
+    public void ExtractStringResult_JsonElementString_ReturnsUnderlyingString()
+    {
+        var element = System.Text.Json.JsonDocument.Parse("\"hello\"").RootElement;
+
+        var result = SchemaJsonParser.ExtractStringResult(element);
+
+        result.Should().Be("hello");
+    }
+
+    [Fact]
+    public void ExtractStringResult_JsonElementNonString_ReturnsNull()
+    {
+        var element = System.Text.Json.JsonDocument.Parse("42").RootElement;
+
+        var result = SchemaJsonParser.ExtractStringResult(element);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractStringResult_NullOrOtherType_ReturnsNull()
+    {
+        SchemaJsonParser.ExtractStringResult(null).Should().BeNull();
+        SchemaJsonParser.ExtractStringResult(42).Should().BeNull();
+    }
 }
 ```
 
@@ -1262,30 +1297,65 @@ internal static class SchemaJsonParser
             return false;
         }
     }
+
+    // A tool result reaches this codebase two different ways depending on which
+    // concrete AIFunction produced it: a real MCP-derived tool's InvokeAsync returns
+    // the raw string the server sent, while an AIFunctionFactory.Create-built delegate
+    // (used throughout this project's own tests as a fake tool) wraps its return value
+    // as a System.Text.Json.JsonElement instead — confirmed by direct inspection against
+    // the installed Microsoft.Extensions.AI.Abstractions 10.9.0 package. Every caller
+    // that reads a tool's raw JSON text should go through this helper rather than
+    // assuming one exact CLR type, the same defensive-parsing posture this project
+    // already applies to LLM-sourced HrMetricRow fields (see FlexibleStringConverter).
+    public static string? ExtractStringResult(object? result) => result switch
+    {
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => null
+    };
 }
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test tests/HrDashboard.Agents.Tests --filter "FullyQualifiedName~SchemaJsonParserTests"`
-Expected: PASS (4 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Refactor `ToolCallTracker` to delegate to the shared parser**
 
-In `src/HrDashboard.Agents/ToolCallTracker.cs`, remove the `using System.Text.Json;` line, and replace the private `TryParseColumnNames` method body (the whole method, including its leading comment) with:
+In `src/HrDashboard.Agents/ToolCallTracker.cs`, remove the `using System.Text.Json;` line (no longer needed once both blocks below delegate to `SchemaJsonParser`), then:
 
-```csharp
+1. Replace the string/JsonElement extraction block inside `Observe`:
+   ```csharp
+        string? json = result switch
+        {
+            string s => s,
+            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } je => je.GetString(),
+            _ => null
+        };
+        if (json is null || !TryParseColumnNames(json, out var columns))
+            return;
+   ```
+   with:
+   ```csharp
+        var json = SchemaJsonParser.ExtractStringResult(result);
+        if (json is null || !TryParseColumnNames(json, out var columns))
+            return;
+   ```
+
+2. Replace the private `TryParseColumnNames` method body (the whole method, including its leading comment) with:
+   ```csharp
     // DescribeTable's JSON result is a row-per-column array (see DbResultSerializer in
     // HrDashboard.McpServer). Delegates to the shared parser also used by
     // GetSchemaOverviewAsync (see SchemaJsonParser.cs).
     private static bool TryParseColumnNames(string json, out IReadOnlyList<string> columns) =>
         SchemaJsonParser.TryParseRowValues(json, "column_name", out columns);
-```
+   ```
 
 - [ ] **Step 6: Run the existing `ToolCallTracker` tests to confirm no regression**
 
 Run: `dotnet test tests/HrDashboard.Agents.Tests --filter "FullyQualifiedName~ToolCallTrackerTests"`
-Expected: PASS (still 7 tests, unchanged behavior)
+Expected: PASS (still 8 tests, unchanged behavior)
 
 - [ ] **Step 7: Write the failing tests for `GetSchemaOverviewAsync`**
 
@@ -1376,7 +1446,8 @@ In `src/HrDashboard.Agents/HrAgentService.cs`, add this method (e.g. right after
         if (listTablesFn is null) return [];
 
         var listResult = await listTablesFn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>()), ct);
-        if (listResult is not string listJson || !SchemaJsonParser.TryParseRowValues(listJson, "table_name", out var tableNames))
+        var listJson = SchemaJsonParser.ExtractStringResult(listResult);
+        if (listJson is null || !SchemaJsonParser.TryParseRowValues(listJson, "table_name", out var tableNames))
             return [];
 
         var describeFn = _tools.OfType<AIFunction>()
@@ -1388,7 +1459,8 @@ In `src/HrDashboard.Agents/HrAgentService.cs`, add this method (e.g. right after
         {
             var describeResult = await describeFn.InvokeAsync(
                 new AIFunctionArguments(new Dictionary<string, object?> { ["tableName"] = tableName }), ct);
-            if (describeResult is string describeJson && SchemaJsonParser.TryParseRowValues(describeJson, "column_name", out var columns))
+            var describeJson = SchemaJsonParser.ExtractStringResult(describeResult);
+            if (describeJson is not null && SchemaJsonParser.TryParseRowValues(describeJson, "column_name", out var columns))
                 overviews.Add(new TableOverview(tableName, columns));
         }
 
