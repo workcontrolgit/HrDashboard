@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.AI;
 
 namespace HrDashboard.Agents;
 
@@ -41,18 +42,20 @@ internal static class SchemaJsonParser
         }
     }
 
-    // A tool result reaches this codebase two different ways depending on which
-    // concrete AIFunction produced it: a real MCP-derived tool's InvokeAsync returns
-    // the raw string the server sent, while an AIFunctionFactory.Create-built delegate
-    // (used throughout this project's own tests as a fake tool) wraps its return value
-    // as a System.Text.Json.JsonElement instead — confirmed by direct inspection against
-    // the installed Microsoft.Extensions.AI.Abstractions 10.9.0 package. Every caller
-    // that reads a tool's raw JSON text should go through this helper rather than
-    // assuming one exact CLR type, the same defensive-parsing posture this project
-    // already applies to LLM-sourced HrMetricRow fields (see FlexibleStringConverter).
+    // A tool result reaches this codebase three different ways depending on the
+    // concrete AIFunction source: (1) a real MCP-derived tool (via ModelContextProtocol.Client)
+    // returns TextContent, confirmed by live testing against a real MCP server; (2) a raw string
+    // is another production path; (3) an AIFunctionFactory.Create-built delegate (used
+    // throughout this project's own tests as a fake tool) wraps its return value as a
+    // System.Text.Json.JsonElement instead — confirmed by direct inspection against the
+    // installed Microsoft.Extensions.AI.Abstractions 10.9.0 package. Every caller that reads
+    // a tool's raw JSON text should go through this helper rather than assuming one exact CLR
+    // type, the same defensive-parsing posture this project already applies to LLM-sourced
+    // HrMetricRow fields (see FlexibleStringConverter).
     public static string? ExtractStringResult(object? result) => result switch
     {
         string s => s,
+        TextContent tc => tc.Text,
         JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
         _ => null
     };

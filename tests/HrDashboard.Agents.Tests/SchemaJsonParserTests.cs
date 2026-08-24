@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.AI;
 using Xunit;
 
 namespace HrDashboard.Agents.Tests;
@@ -79,5 +80,15 @@ public class SchemaJsonParserTests
     {
         SchemaJsonParser.ExtractStringResult(null).Should().BeNull();
         SchemaJsonParser.ExtractStringResult(42).Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractStringResult_TextContent_ReturnsUnderlyingText()
+    {
+        var content = new TextContent("hello");
+
+        var result = SchemaJsonParser.ExtractStringResult(content);
+
+        result.Should().Be("hello");
     }
 }
