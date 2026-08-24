@@ -229,12 +229,21 @@ public class ChatSessionService(
                 conversationId, MessageRole.Assistant, assistantVm.Content, metricsJson, ct);
             logger.LogInformation("SendAsync: persist assistant message took {ElapsedMs}ms", persistStopwatch.ElapsedMilliseconds);
 
+            // Best-effort usage logging — a transient DB error here must never overwrite
+            // an assistant message that already streamed successfully.
             var turnUsage = agent.LastTurnUsage;
             if (turnUsage is not null)
             {
-                await usage.AddUsageRecordAsync(
-                    savedMessage.Id, userId, turnUsage.Provider, turnUsage.Model,
-                    turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.TotalTokens, ct);
+                try
+                {
+                    await usage.AddUsageRecordAsync(
+                        savedMessage.Id, userId, turnUsage.Provider, turnUsage.Model,
+                        turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.TotalTokens, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Failed to persist usage record for message {MessageId}", savedMessage.Id);
+                }
             }
 
             // Auto-title on first exchange

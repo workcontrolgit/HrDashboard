@@ -57,6 +57,7 @@ public class UsageRepository(IDbContextFactory<AppDbContext> dbFactory) : IUsage
         return await db.UsageRecords
             .Where(u => u.UserId == userId)
             .GroupBy(u => new { u.Provider, u.Model })
+            .OrderByDescending(g => g.Sum(x => x.TotalTokens))
             .Select(g => new ProviderModelUsageTotal(
                 g.Key.Provider,
                 g.Key.Model,

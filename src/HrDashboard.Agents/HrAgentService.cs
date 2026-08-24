@@ -309,7 +309,9 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 anyUsageSeen = true;
                 totalInputTokens  += roundUsage.InputTokenCount ?? 0;
                 totalOutputTokens += roundUsage.OutputTokenCount ?? 0;
-                totalTokens       += roundUsage.TotalTokenCount ?? 0;
+                // Some providers populate input/output but not total — fall back to their
+                // sum rather than letting this update contribute 0 to the running total.
+                totalTokens       += roundUsage.TotalTokenCount ?? ((roundUsage.InputTokenCount ?? 0) + (roundUsage.OutputTokenCount ?? 0));
             }
 
             var calls = response.Messages
@@ -371,7 +373,9 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 anyUsageSeen = true;
                 totalInputTokens  += usageContent.Details.InputTokenCount ?? 0;
                 totalOutputTokens += usageContent.Details.OutputTokenCount ?? 0;
-                totalTokens       += usageContent.Details.TotalTokenCount ?? 0;
+                // Some providers populate input/output but not total — fall back to their
+                // sum rather than letting this update contribute 0 to the running total.
+                totalTokens       += usageContent.Details.TotalTokenCount ?? ((usageContent.Details.InputTokenCount ?? 0) + (usageContent.Details.OutputTokenCount ?? 0));
             }
 
             if (!string.IsNullOrEmpty(update.Text))
