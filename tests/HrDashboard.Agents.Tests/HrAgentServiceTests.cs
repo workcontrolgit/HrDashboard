@@ -48,10 +48,11 @@ public class HrAgentServiceTests
               .Returns(Task.FromResult(TextResponse("The answer is 42.")));
 
         var sut = Build(client);
-        var (raw, metrics) = await sut.AskAsync("test prompt");
+        var (raw, metrics, pending) = await sut.AskAsync("test prompt");
 
         raw.Should().Be("The answer is 42.");
         metrics.Should().BeEmpty(); // no JSON array in "The answer is 42."
+        pending.Should().BeNull();
     }
 
     [Fact]
@@ -66,12 +67,13 @@ public class HrAgentServiceTests
                   Task.FromResult(TextResponse(finalText)));
 
         var sut = Build(client);
-        var (raw, metrics) = await sut.AskAsync("salary breakdown");
+        var (raw, metrics, pending) = await sut.AskAsync("salary breakdown");
 
         raw.Should().Be(finalText);
         metrics.Should().HaveCount(1);
         metrics[0].Label.Should().Be("IT");
         metrics[0].Value.Should().Be(8000.0);
+        pending.Should().BeNull(); // GetSalaryBreakdown is a data tool, not schema-only
     }
 
     [Fact]
@@ -83,9 +85,55 @@ public class HrAgentServiceTests
               .Returns(_ => Task.FromResult(ToolCallResponse("loop")));
 
         var sut = Build(client);
-        var (raw, _) = await sut.AskAsync("infinite loop");
+        var (raw, _, pending) = await sut.AskAsync("infinite loop");
 
         raw.Should().Contain("iteration limit");
+        pending.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AskAsync_SchemaOnlyThenPlainTextQuestion_ReturnsPendingColumns()
+    {
+        const string describeTableJson =
+            """[{"column_name":"EMPLOYEE_ID","data_type":"NUMBER","is_nullable":"NO"},{"column_name":"FIRST_NAME","data_type":"VARCHAR2","is_nullable":"YES"}]""";
+
+        var client = Substitute.For<IChatClient>();
+        var describeCall = new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" });
+
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(
+                  Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, [describeCall])])),
+                  Task.FromResult(TextResponse("Which columns would you like to see?")));
+
+        // Create a test tool that returns the describe table JSON
+        var tools = new List<AITool> { new TestDescribeTableTool(describeTableJson) };
+        var sut = new HrAgentService(client, tools, NullLogger<HrAgentService>.Instance);
+
+        var (raw, metrics, pending) = await sut.AskAsync("list employees");
+
+        raw.Should().Be("Which columns would you like to see?");
+        metrics.Should().BeEmpty();
+        pending.Should().NotBeNull();
+        pending!.TableName.Should().Be("EMPLOYEES");
+        pending.Columns.Should().Equal("EMPLOYEE_ID", "FIRST_NAME");
+    }
+
+    /// <summary>Test-only DescribeTable tool that returns a fixed JSON result.</summary>
+    private sealed class TestDescribeTableTool : AIFunction
+    {
+        private readonly string _resultJson;
+
+        public TestDescribeTableTool(string resultJson)
+        {
+            _resultJson = resultJson;
+        }
+
+        public override string Name => "DescribeTable";
+        public override string? Description => "Test tool";
+
+        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken = default)
+            => new ValueTask<object?>((object?)_resultJson);
     }
 
     // ── AskStreamAsync tests ─────────────────────────────────────────────────

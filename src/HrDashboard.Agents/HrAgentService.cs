@@ -15,6 +15,8 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
     private IList<AITool> _tools = [];
     private bool _initialized;
 
+    public PendingColumnOptions? LastPendingColumnOptions { get; private set; }
+
     private const int MaxIterations = 20;
 
     private const string SystemPrompt = """
@@ -144,7 +146,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             string.Join(", ", _tools.Select(t => t.Name)));
     }
 
-    public async Task<(string RawText, IReadOnlyList<HrMetricRow> Metrics)> AskAsync(
+    public async Task<(string RawText, IReadOnlyList<HrMetricRow> Metrics, PendingColumnOptions? PendingColumns)> AskAsync(
         string prompt,
         CancellationToken ct = default)
     {
@@ -158,6 +160,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             new(ChatRole.System, SystemPrompt),
             new(ChatRole.User,   prompt)
         };
+        var tracker = new ToolCallTracker();
 
         for (int i = 0; i < MaxIterations; i++)
         {
@@ -176,7 +179,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 var raw = response.Text ?? string.Empty;
                 _logger.LogInformation("Agent completed in {Iterations} iteration(s)", i + 1);
                 var metrics = HrMetricParser.Parse(raw);
-                return (raw, metrics);
+                return (raw, metrics, tracker.Classify(raw));
             }
 
             foreach (var call in calls)
@@ -185,6 +188,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                     string.Join(", ", (call.Arguments ?? new Dictionary<string, object?>()).Select(kv => $"{kv.Key}={kv.Value}")));
 
                 var result = await InvokeToolAsync(call, ct);
+                tracker.Observe(call, result);
 
                 messages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(call.CallId, result)]));
@@ -192,7 +196,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         }
 
         _logger.LogWarning("Agent hit iteration limit for prompt: {Prompt}", prompt);
-        return ("[Agent reached iteration limit — rephrase your query]", []);
+        return ("[Agent reached iteration limit — rephrase your query]", [], null);
     }
 
     private List<ChatMessage> BuildMessages(
