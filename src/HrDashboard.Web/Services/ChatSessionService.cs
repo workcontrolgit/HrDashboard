@@ -9,6 +9,7 @@ namespace HrDashboard.Web.Services;
 public class ChatSessionService(
     IHrAgentService agent,
     IConversationRepository repo,
+    IUsageRepository usage,
     IJSRuntime js,
     ILogger<ChatSessionService> logger)
 {
@@ -224,9 +225,17 @@ public class ChatSessionService(
             var metricsJson = metrics.Count > 0
                 ? JsonSerializer.Serialize(metrics)
                 : null;
-            await repo.AddMessageAsync(
+            var savedMessage = await repo.AddMessageAsync(
                 conversationId, MessageRole.Assistant, assistantVm.Content, metricsJson, ct);
             logger.LogInformation("SendAsync: persist assistant message took {ElapsedMs}ms", persistStopwatch.ElapsedMilliseconds);
+
+            var turnUsage = agent.LastTurnUsage;
+            if (turnUsage is not null)
+            {
+                await usage.AddUsageRecordAsync(
+                    savedMessage.Id, userId, turnUsage.Provider, turnUsage.Model,
+                    turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.TotalTokens, ct);
+            }
 
             // Auto-title on first exchange
             if (Messages.Count == 2 && CurrentConversation.Title == "New conversation")

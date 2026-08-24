@@ -85,6 +85,7 @@ try
     });
 
     builder.Services.AddScoped<IConversationRepository, ConversationRepository>();
+    builder.Services.AddScoped<IUsageRepository, UsageRepository>();
 
     // ── IChatClient ──────────────────────────────────────────────────────────
     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
