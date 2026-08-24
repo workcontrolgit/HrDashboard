@@ -34,6 +34,14 @@ public interface IHrAgentService
     PendingColumnOptions? LastPendingColumnOptions { get; }
 
     /// <summary>
+    /// Set once the most recent <see cref="AskStreamAsync"/> call's stream is fully
+    /// drained. Null if the underlying provider reported no usage at all for that
+    /// turn's LLM calls; otherwise the summed input/output/total token counts across
+    /// every internal call the turn made.
+    /// </summary>
+    TurnUsageInfo? LastTurnUsage { get; }
+
+    /// <summary>
     /// Returns the real table/column schema available to query, built directly from the
     /// ListTables/DescribeTable tool results — no LLM call involved, so this costs zero
     /// tokens and the columns can never be hallucinated. Intended for a chat-start

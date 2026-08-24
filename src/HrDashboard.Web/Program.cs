@@ -89,6 +89,18 @@ try
     // ── IChatClient ──────────────────────────────────────────────────────────
     var provider = builder.Configuration["AI:Provider"] ?? "Ollama";
 
+    // Resolved once, here, so both the IChatClient factory's model selection below and
+    // HrAgentService's usage-tracking label use the exact same value — computed before
+    // Build() since HrAgentService's DI registration below needs it.
+    var resolvedModel = provider switch
+    {
+        var p when string.Equals(p, "AzureOpenAI", StringComparison.OrdinalIgnoreCase) =>
+            builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o",
+        var p when string.Equals(p, "Nvidia", StringComparison.OrdinalIgnoreCase) =>
+            builder.Configuration["AI:Nvidia:Model"] ?? "meta/llama-3.1-8b-instruct",
+        _ => builder.Configuration["AI:Ollama:Model"] ?? "llama3.1"
+    };
+
     builder.Services.AddSingleton<IChatClient>(_ =>
     {
         if (string.Equals(provider, "AzureOpenAI", StringComparison.OrdinalIgnoreCase))
@@ -132,7 +144,7 @@ try
         var chatClient = sp.GetRequiredService<IChatClient>();
         var endpoint   = builder.Configuration["McpServer:Endpoint"] ?? "http://localhost:5200/mcp";
         var logger     = sp.GetRequiredService<ILogger<HrAgentService>>();
-        return new HrAgentService(chatClient, endpoint, logger);
+        return new HrAgentService(chatClient, endpoint, provider, resolvedModel, logger);
     });
 
     builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
@@ -146,14 +158,6 @@ try
     var app = builder.Build();
 
     // ── Log active AI provider/model so it's visible without digging through config ──
-    var resolvedModel = provider switch
-    {
-        var p when string.Equals(p, "AzureOpenAI", StringComparison.OrdinalIgnoreCase) =>
-            builder.Configuration["AI:AzureOpenAI:DeploymentName"] ?? "gpt-4o",
-        var p when string.Equals(p, "Nvidia", StringComparison.OrdinalIgnoreCase) =>
-            builder.Configuration["AI:Nvidia:Model"] ?? "meta/llama-3.1-8b-instruct",
-        _ => builder.Configuration["AI:Ollama:Model"] ?? "llama3.1"
-    };
     Log.Information("AI provider: {Provider} | Model: {Model}", provider, resolvedModel);
 
     // ── Auto-migrate on startup ───────────────────────────────────────────────

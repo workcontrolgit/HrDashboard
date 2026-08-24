@@ -11,12 +11,16 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 {
     private readonly IChatClient _chatClient;
     private readonly string _mcpServerEndpoint;
+    private readonly string _providerName;
+    private readonly string _modelName;
     private readonly ILogger<HrAgentService> _logger;
     private McpClient? _mcpClient;
     private IList<AITool> _tools = [];
     private bool _initialized;
 
     public PendingColumnOptions? LastPendingColumnOptions { get; private set; }
+
+    public TurnUsageInfo? LastTurnUsage { get; private set; }
 
     private const int MaxIterations = 20;
 
@@ -142,10 +146,17 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         one-sentence summary — never a description of what you're doing.
         """;
 
-    public HrAgentService(IChatClient chatClient, string mcpServerEndpoint, ILogger<HrAgentService> logger)
+    public HrAgentService(
+        IChatClient chatClient,
+        string mcpServerEndpoint,
+        string providerName,
+        string modelName,
+        ILogger<HrAgentService> logger)
     {
         _chatClient        = chatClient;
         _mcpServerEndpoint = mcpServerEndpoint;
+        _providerName      = providerName;
+        _modelName         = modelName;
         _logger            = logger;
     }
 
@@ -153,10 +164,14 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
     internal HrAgentService(
         IChatClient chatClient,
         IList<AITool> tools,
-        ILogger<HrAgentService> logger)
+        ILogger<HrAgentService> logger,
+        string providerName = "TestProvider",
+        string modelName = "test-model")
     {
         _chatClient        = chatClient;
         _mcpServerEndpoint = string.Empty;
+        _providerName      = providerName;
+        _modelName         = modelName;
         _logger            = logger;
         _tools             = tools;
         _initialized       = true;
