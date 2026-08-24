@@ -32,7 +32,13 @@ internal sealed class ToolCallTracker
         if (!string.Equals(call.Name, "DescribeTable", StringComparison.OrdinalIgnoreCase))
             return;
 
-        if (result is not string json || !TryParseColumnNames(json, out var columns))
+        string? json = result switch
+        {
+            string s => s,
+            System.Text.Json.JsonElement { ValueKind: System.Text.Json.JsonValueKind.String } je => je.GetString(),
+            _ => null
+        };
+        if (json is null || !TryParseColumnNames(json, out var columns))
             return;
 
         LastDescribeTableName = call.Arguments is not null

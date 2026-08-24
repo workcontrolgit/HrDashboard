@@ -106,8 +106,8 @@ public class HrAgentServiceTests
                   Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, [describeCall])])),
                   Task.FromResult(TextResponse("Which columns would you like to see?")));
 
-        // Create a test tool that returns the describe table JSON
-        var tools = new List<AITool> { new TestDescribeTableTool(describeTableJson) };
+        Func<string, string> describeTableFn = tableName => describeTableJson;
+        var tools = new List<AITool> { AIFunctionFactory.Create(describeTableFn, "DescribeTable", null, null) };
         var sut = new HrAgentService(client, tools, NullLogger<HrAgentService>.Instance);
 
         var (raw, metrics, pending) = await sut.AskAsync("list employees");
@@ -117,23 +117,6 @@ public class HrAgentServiceTests
         pending.Should().NotBeNull();
         pending!.TableName.Should().Be("EMPLOYEES");
         pending.Columns.Should().Equal("EMPLOYEE_ID", "FIRST_NAME");
-    }
-
-    /// <summary>Test-only DescribeTable tool that returns a fixed JSON result.</summary>
-    private sealed class TestDescribeTableTool : AIFunction
-    {
-        private readonly string _resultJson;
-
-        public TestDescribeTableTool(string resultJson)
-        {
-            _resultJson = resultJson;
-        }
-
-        public override string Name => "DescribeTable";
-        public override string? Description => "Test tool";
-
-        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken = default)
-            => new ValueTask<object?>((object?)_resultJson);
     }
 
     // ── AskStreamAsync tests ─────────────────────────────────────────────────
