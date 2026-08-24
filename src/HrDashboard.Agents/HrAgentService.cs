@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using HrDashboard.Agents.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -220,12 +221,14 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
     {
         await EnsureInitializedAsync(ct);
 
+        LastPendingColumnOptions = null;
         _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
 
         var totalStopwatch = Stopwatch.StartNew();
         var toolOptions = new ChatOptions { Tools = [.. _tools] };
         var messages = BuildMessages(history, prompt);
         bool toolsWereUsed = false;
+        var tracker = new ToolCallTracker();
 
         // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data.
         // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
@@ -274,6 +277,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             {
                 var toolStopwatch = Stopwatch.StartNew();
                 var result = await InvokeToolAsync(call, ct);
+                tracker.Observe(call, result);
                 _logger.LogInformation("Tool call {Tool} took {ElapsedMs}ms", call.Name, toolStopwatch.ElapsedMilliseconds);
                 messages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(call.CallId, result)]));
@@ -283,14 +287,18 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         // Phase 2: stream the final summarization over the accumulated tool context
         var phase2Stopwatch = Stopwatch.StartNew();
         var chunkCount = 0;
+        var fullTextBuilder = new StringBuilder();
         await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
                 chunkCount++;
+                fullTextBuilder.Append(update.Text);
                 yield return update.Text;
             }
         }
+
+        LastPendingColumnOptions = tracker.Classify(fullTextBuilder.ToString());
 
         _logger.LogInformation(
             "Agent streaming final answer complete: {ChunkCount} chunk(s), phase 2 took {Phase2Ms}ms, {TotalMs}ms total",

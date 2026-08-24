@@ -179,4 +179,55 @@ public class HrAgentServiceTests
 
         chunks.Should().ContainSingle().Which.Should().Contain("iteration limit");
     }
+
+    [Fact]
+    public async Task AskStreamAsync_SchemaOnlyThenPlainTextQuestion_SetsLastPendingColumnOptions()
+    {
+        const string describeTableJson =
+            """[{"column_name":"EMPLOYEE_ID","data_type":"NUMBER","is_nullable":"NO"},{"column_name":"SALARY","data_type":"NUMBER","is_nullable":"YES"}]""";
+
+        var client = Substitute.For<IChatClient>();
+        var describeCall = new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" });
+
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(
+                  Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, [describeCall])])),
+                  Task.FromResult(TextResponse(string.Empty))); // breaks Phase 1 loop into Phase 2
+
+        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(FakeStream("Which columns would you like to see?"));
+
+        Func<string, string> describeTableFn = tableName => describeTableJson;
+        var tools = new List<AITool> { AIFunctionFactory.Create(describeTableFn, "DescribeTable", null, null) };
+        var sut = new HrAgentService(client, tools, NullLogger<HrAgentService>.Instance);
+
+        var chunks = new List<string>();
+        await foreach (var chunk in sut.AskStreamAsync([], "list employees"))
+            chunks.Add(chunk);
+
+        sut.LastPendingColumnOptions.Should().NotBeNull();
+        sut.LastPendingColumnOptions!.TableName.Should().Be("EMPLOYEES");
+        sut.LastPendingColumnOptions.Columns.Should().Equal("EMPLOYEE_ID", "SALARY");
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_WithDataToolCall_LeavesLastPendingColumnOptionsNull()
+    {
+        var client = Substitute.For<IChatClient>();
+
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(
+                  Task.FromResult(ToolCallResponse("GetDeptHeadcount")),
+                  Task.FromResult(TextResponse(string.Empty)));
+
+        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(FakeStream("""[{"label":"IT","value":5,"category":"Headcount"}] Done."""));
+
+        var sut = Build(client);
+
+        await foreach (var _ in sut.AskStreamAsync([], "headcount per department")) { }
+
+        sut.LastPendingColumnOptions.Should().BeNull();
+    }
 }
