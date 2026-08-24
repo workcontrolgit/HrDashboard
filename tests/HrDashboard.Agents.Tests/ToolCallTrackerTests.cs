@@ -96,6 +96,26 @@ public class ToolCallTrackerTests
     }
 
     [Fact]
+    public void Classify_TwoTablesDescribed_QualifiesColumnsByTable()
+    {
+        const string departmentsJson =
+            """[{"column_name":"DEPARTMENT_ID"},{"column_name":"DEPARTMENT_NAME"},{"column_name":"MANAGER_ID"}]""";
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "DEPARTMENTS" }), departmentsJson);
+        tracker.Observe(new FunctionCallContent("call-2", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" }), ValidDescribeTableJson);
+
+        var result = tracker.Classify("Which columns would you like to see?");
+
+        result.Should().NotBeNull();
+        result!.TableName.Should().Be("DEPARTMENTS, EMPLOYEES");
+        result.Columns.Should().Equal(
+            "DEPARTMENTS.DEPARTMENT_ID", "DEPARTMENTS.DEPARTMENT_NAME", "DEPARTMENTS.MANAGER_ID",
+            "EMPLOYEES.EMPLOYEE_ID", "EMPLOYEES.FIRST_NAME", "EMPLOYEES.SALARY");
+    }
+
+    [Fact]
     public void Classify_SchemaOnlyButTextContainsJsonArray_ReturnsNull()
     {
         var tracker = new ToolCallTracker();

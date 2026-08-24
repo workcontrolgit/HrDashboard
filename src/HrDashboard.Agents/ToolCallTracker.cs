@@ -16,6 +16,15 @@ internal sealed class ToolCallTracker
     public string? LastDescribeTableName { get; private set; }
     public IReadOnlyList<string>? LastDescribeTableColumns { get; private set; }
 
+    // Accumulates EVERY DescribeTable call in the turn (not just the last), so a listing
+    // that spans a foreign-key relationship (e.g. departments + their manager's name from
+    // EMPLOYEES) can offer columns from all described tables — grounded in real schema
+    // calls the same way a single-table listing always was, just no longer limited to one
+    // table's columns silently overwriting another's.
+    private readonly List<string> _describedTableOrder = [];
+    private readonly Dictionary<string, IReadOnlyList<string>> _describedTableColumns =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public void Observe(FunctionCallContent call, object? result)
     {
         var isSchemaTool =
@@ -35,25 +44,40 @@ internal sealed class ToolCallTracker
         if (json is null || !TryParseColumnNames(json, out var columns))
             return;
 
-        LastDescribeTableName = call.Arguments is not null
-            && call.Arguments.TryGetValue("tableName", out var tableName)
-            ? tableName?.ToString() ?? ""
+        var tableName = call.Arguments is not null
+            && call.Arguments.TryGetValue("tableName", out var tableNameArg)
+            ? tableNameArg?.ToString() ?? ""
             : "";
+
+        LastDescribeTableName = tableName;
         LastDescribeTableColumns = columns;
+
+        if (!_describedTableColumns.ContainsKey(tableName))
+            _describedTableOrder.Add(tableName);
+        _describedTableColumns[tableName] = columns;
     }
 
     /// <summary>
     /// Returns the real column list to offer as a clarification, or null if this turn
     /// was a normal final answer (a data tool ran, or no DescribeTable columns were
-    /// captured, or the response text isn't plain natural language).
+    /// captured, or the response text isn't plain natural language). When more than one
+    /// table was described this turn, each column is qualified as "TABLE.COLUMN" — both a
+    /// display disambiguator (two HR tables can share a raw name, e.g. MANAGER_ID) and
+    /// valid SQL the model can use verbatim once the user confirms their selection.
     /// </summary>
     public PendingColumnOptions? Classify(string finalText)
     {
         if (DataToolCalled) return null;
-        if (LastDescribeTableColumns is null || LastDescribeTableColumns.Count == 0) return null;
+        if (_describedTableOrder.Count == 0) return null;
         if (!HrMetricParser.LooksLikeGenuineTextAnswer(finalText)) return null;
 
-        return new PendingColumnOptions(LastDescribeTableName ?? "", LastDescribeTableColumns);
+        var multiTable = _describedTableOrder.Count > 1;
+        var combinedColumns = _describedTableOrder
+            .SelectMany(table => _describedTableColumns[table]
+                .Select(column => multiTable ? $"{table}.{column}" : column))
+            .ToList();
+
+        return new PendingColumnOptions(string.Join(", ", _describedTableOrder), combinedColumns);
     }
 
     // DescribeTable's JSON result is a row-per-column array (see DbResultSerializer in

@@ -33,6 +33,8 @@ public interface IHrAgentService
     /// </summary>
     PendingColumnOptions? LastPendingColumnOptions { get; }
 
+    HrDataSet? LastDataSet { get; }
+
     /// <summary>
     /// Set once the most recent <see cref="AskStreamAsync"/> call's stream is fully
     /// drained. Null if the underlying provider reported no usage at all for that
