@@ -98,8 +98,23 @@ public class ChatSessionService(
     public async Task EnsureSchemaOverviewLoadedAsync(CancellationToken ct = default)
     {
         if (SchemaOverview is not null) return;
-        SchemaOverview = await agent.GetSchemaOverviewAsync(ct);
-        Notify();
+
+        try
+        {
+            SchemaOverview = await agent.GetSchemaOverviewAsync(ct);
+            Notify();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // This runs from PromptBar's OnInitializedAsync, i.e. during page render — an
+            // unhandled exception there crashes the whole page with a 500, not just this one
+            // summary card (confirmed live: killing the MCP server mid-startup did exactly
+            // that). The card is a nice-to-have, never load-bearing for the rest of the page,
+            // so a schema-fetch failure (e.g. the MCP server isn't up yet) should just mean no
+            // card this time — SchemaOverview stays null so a later retry (new conversation,
+            // page reload) can still succeed once connectivity recovers.
+            logger.LogWarning(ex, "Failed to load schema overview for the data-availability card");
+        }
     }
 
     public async Task SendAsync(string prompt, string userId, CancellationToken ct = default)
@@ -121,7 +136,12 @@ public class ChatSessionService(
         var assistantVm = MessageViewModel.StreamingAssistant();
         Messages.Add(assistantVm);
         IsStreaming = true;
-        CurrentMetrics = [];
+        // Deliberately NOT clearing CurrentMetrics here: this runs before we know whether the
+        // new request will even succeed. Clearing eagerly meant any error (a failed tool call,
+        // a template error from the LLM provider, etc.) permanently blanked the results panel's
+        // chart even though the previous successful exchange's chart was still meaningful to
+        // show. CurrentMetrics is only ever overwritten below, once a new exchange actually
+        // completes — so a failed exchange leaves the last-good chart exactly as it was.
         Notify();
 
         var totalStopwatch = Stopwatch.StartNew();
@@ -152,7 +172,13 @@ public class ChatSessionService(
             var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);
             var arrayFound = HrMetricParser.TryParse(cleaned, out var metrics);
             assistantVm.Metrics = metrics;
-            CurrentMetrics = metrics;
+            // Only replace the results panel's data when this turn actually produced a new
+            // metrics array. A turn that didn't (a fallback message, an iteration-limit notice,
+            // a plain conversational reply) has nothing new to show — leaving CurrentMetrics
+            // alone keeps the last genuinely-relevant chart visible instead of blanking the
+            // panel for an unrelated or failed exchange.
+            if (arrayFound)
+                CurrentMetrics = metrics;
 
             if (!arrayFound)
             {
