@@ -44,7 +44,7 @@
                                      Color="@(isSelected ? Color.Primary : Color.Default)"
                                      Variant="@(isSelected ? Variant.Filled : Variant.Outlined)"
                                      Size="Size.Small"
-                                     Disabled="@(msg.ColumnsConfirmed || Session.IsStreaming)"
+                                     Disabled="@IsLockedRow(msg)"
                                      OnClick="@(() => ToggleColumn(msg, column))">
                                 @column
                             </MudChip>
@@ -52,7 +52,7 @@
                         <MudChip T="string"
                                  Color="Color.Success"
                                  Size="Size.Small"
-                                 Disabled="@(msg.ColumnsConfirmed || Session.IsStreaming || msg.SelectedColumns is null || msg.SelectedColumns.Count == 0)"
+                                 Disabled="@(IsLockedRow(msg) || msg.SelectedColumns is null || msg.SelectedColumns.Count == 0)"
                                  OnClick="@(() => ConfirmColumnsAsync(msg))">
                             Show results
                         </MudChip>
@@ -83,6 +83,9 @@
             await Task.Yield();
         });
     }
+
+    private bool IsLockedRow(HrDashboard.Web.Services.MessageViewModel msg) =>
+        msg.ColumnsConfirmed || Session.IsStreaming || Session.Messages.LastOrDefault(m => m.PendingColumns is not null) != msg;
 
     private void ToggleColumn(HrDashboard.Web.Services.MessageViewModel msg, string column)
     {
