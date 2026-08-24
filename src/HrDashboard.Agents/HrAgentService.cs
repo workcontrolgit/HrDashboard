@@ -190,7 +190,15 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
         _logger.LogInformation("HR agent prompt: {Prompt}", prompt);
 
-        var options = new ChatOptions { Tools = [.. _tools] };
+        // meta/llama-3.1-8b-instruct's chat template hard-rejects a response containing more
+        // than one tool call ("Failed to apply prompt template: ... This model only supports
+        // single tool-calls at once!"), returned as an HTTP 500 that aborts the whole turn.
+        // The SystemPrompt's "free to chain" schema-discovery language can otherwise tempt the
+        // model into bundling a DescribeTable call together with the analytics tool call in one
+        // response. AllowMultipleToolCalls=false only limits calls WITHIN one response — the
+        // loop below still lets the model call schema tools across as many separate rounds as
+        // it wants before its one-tool-per-round analytics call.
+        var options = new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false };
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, SystemPrompt),
@@ -260,7 +268,8 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         _logger.LogInformation("HR agent streaming prompt: {Prompt}", prompt);
 
         var totalStopwatch = Stopwatch.StartNew();
-        var toolOptions = new ChatOptions { Tools = [.. _tools] };
+        // AllowMultipleToolCalls=false — see the identical setting in AskAsync for why.
+        var toolOptions = new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false };
         var messages = BuildMessages(history, prompt);
         bool toolsWereUsed = false;
         var tracker = new ToolCallTracker();

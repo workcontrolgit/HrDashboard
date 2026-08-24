@@ -119,6 +119,22 @@ public class HrAgentServiceTests
         pending.Columns.Should().Equal("EMPLOYEE_ID", "FIRST_NAME");
     }
 
+    [Fact]
+    public async Task AskAsync_RequestsAtMostOneToolCallPerResponse()
+    {
+        var client = Substitute.For<IChatClient>();
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(TextResponse("The answer is 42.")));
+
+        var sut = Build(client);
+        await sut.AskAsync("test prompt");
+
+        await client.Received().GetResponseAsync(
+            Arg.Any<IList<ChatMessage>>(),
+            Arg.Is<ChatOptions?>(o => o != null && o.AllowMultipleToolCalls == false),
+            Arg.Any<CancellationToken>());
+    }
+
     // ── AskStreamAsync tests ─────────────────────────────────────────────────
 
     [Fact]
@@ -229,6 +245,22 @@ public class HrAgentServiceTests
         await foreach (var _ in sut.AskStreamAsync([], "headcount per department")) { }
 
         sut.LastPendingColumnOptions.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AskStreamAsync_RequestsAtMostOneToolCallPerResponse()
+    {
+        var client = Substitute.For<IChatClient>();
+        client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(TextResponse("Hello world")));
+
+        var sut = Build(client);
+        await foreach (var _ in sut.AskStreamAsync([], "hi")) { }
+
+        await client.Received().GetResponseAsync(
+            Arg.Any<IList<ChatMessage>>(),
+            Arg.Is<ChatOptions?>(o => o != null && o.AllowMultipleToolCalls == false),
+            Arg.Any<CancellationToken>());
     }
 
     // ── GetSchemaOverviewAsync tests ─────────────────────────────────────────
