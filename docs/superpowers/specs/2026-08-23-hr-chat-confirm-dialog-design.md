@@ -32,6 +32,8 @@ separate, later sub-project** and is out of scope here (see Non-Goals).
   they keep running straight through with no confirm step.
 - Genuinely out-of-scope questions (no matching tool at all) get an honest "I can't
   help with that" instead of a fabricated or misapplied answer.
+- When a chat starts (no messages yet), the user sees a summary of what data is
+  available to explore, alongside the existing preset report chips.
 
 ## Non-Goals
 
@@ -122,16 +124,43 @@ fabricating an answer. No chips are involved — there is nothing to choose from
 reuses the existing "plain text, no JSON array → shown as-is" path
 (`LooksLikeGenuineTextAnswer`) with no code changes beyond the prompt wording.
 
+### Design Decision 6 — Data-availability summary card, built with zero LLM cost
+
+At chat start (no messages sent yet), the user sees a small summary of what data
+exists to explore — table names and their real columns — shown alongside the existing
+preset report chips, not replacing them.
+
+This summary is built by calling the `ListTables`/`DescribeTable` MCP tools **directly
+from `HrAgentService`, bypassing the LLM entirely** — `HrAgentService` already holds
+the connected `_tools` list from its MCP client, so a new `GetSchemaOverviewAsync`
+method invokes those two tools' `AIFunction`s itself (the same `InvokeAsync` mechanism
+`InvokeToolAsync` already uses for the chat loop) and parses their results with the
+same JSON-parsing approach as Design Decision 1's column capture. No `IChatClient`
+call is involved, so this costs zero tokens and the listed columns can never be
+hallucinated — consistent with every other grounding decision in this spec.
+
+`ChatSessionService` calls this once per circuit and caches the result (schema doesn't
+change during a session); `PromptBar.razor` renders it above the text input, gated on
+`Session.Messages.Count == 0`, so it disappears once the conversation starts.
+
+Two explicitly considered and rejected alternatives, decided 2026-08-24: (a) applying
+the listing confirm-dialog to every query type, including aggregates — rejected,
+aggregates keep their fixed, already-understood shape with no confirm step; (b)
+curated human-friendly labels for columns/tables (e.g. "Employee ID" instead of
+`EMPLOYEE_ID`) — rejected for this pass, chips and the summary card show raw schema
+names as-is. Both may be revisited later but are out of scope here.
+
 ## Components Touched
 
 | File | Change |
 |---|---|
-| `src/HrDashboard.Agents/HrAgentService.cs` | System prompt: listing-style requests stop after schema discovery and ask about columns instead of calling a data tool immediately; add "no tool available" honesty instruction. Turn-classification logic added to `AskAsync`/`AskStreamAsync`. Return contract widened with `PendingColumnOptions`. |
-| `src/HrDashboard.Agents/Models/` | New `PendingColumnOptions` record (or similar). |
-| `src/HrDashboard.Agents/IHrAgentService.cs` | Updated method signatures to carry the new optional payload. |
-| `src/HrDashboard.Web/Services/ChatSessionService.cs` | `SendAsync` reads the new payload and attaches it to the created `MessageViewModel` instead of (or alongside) normal content handling. |
+| `src/HrDashboard.Agents/HrAgentService.cs` | System prompt: listing-style requests stop after schema discovery and ask about columns instead of calling a data tool immediately; add "no tool available" honesty instruction. Turn-classification logic added to `AskAsync`/`AskStreamAsync`. Return contract widened with `PendingColumnOptions`. New `GetSchemaOverviewAsync` method (Design Decision 6). |
+| `src/HrDashboard.Agents/Models/` | New `PendingColumnOptions` record and `TableOverview` record. |
+| `src/HrDashboard.Agents/IHrAgentService.cs` | Updated method signatures to carry the new optional payload; new `GetSchemaOverviewAsync` method. |
+| `src/HrDashboard.Web/Services/ChatSessionService.cs` | `SendAsync` reads the new payload and attaches it to the created `MessageViewModel` instead of (or alongside) normal content handling. New cached `SchemaOverview` property loaded once per circuit. |
 | `src/HrDashboard.Web/Services/MessageViewModel.cs` | New optional `PendingColumnOptions` property; add a "locked/answered" flag for the display-only-after-selection behavior. |
 | `src/HrDashboard.Web/Components/Chat/ChatThread.razor` | Renders multi-select chips + "Show results" action chip under a clarification message; sends the follow-up message on confirm; locks the row after. |
+| `src/HrDashboard.Web/Components/Chat/PromptBar.razor` | Renders the data-availability summary card above the text input, shown only when the conversation is empty. |
 
 ## Testing
 
@@ -141,6 +170,8 @@ reuses the existing "plain text, no JSON array → shown as-is" path
   harness pattern.
 - Unit tests for the ID-column-exclusion default-selection heuristic (e.g. `EmployeeId`
   excluded, `Name`/`Salary`/`Department` included).
+- Unit tests for the shared schema-JSON-row parser and for `GetSchemaOverviewAsync`
+  (Design Decision 6), using the same fake-tool test harness pattern.
 - Live/Playwright verification pass for the actual dialog wording and chip flow —
   system-prompt behavior itself cannot be unit tested directly, consistent with how
   prior prompt changes in this project were verified (see cerebrum.md).
