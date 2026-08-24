@@ -17,6 +17,7 @@ public class ChatSessionService(
     public bool IsStreaming { get; private set; }
     public IReadOnlyList<HrMetricRow> CurrentMetrics { get; private set; } = [];
     public List<ConversationSummary> Conversations { get; private set; } = [];
+    public IReadOnlyList<TableOverview>? SchemaOverview { get; private set; }
 
     public event Action? OnChange;
 
@@ -91,6 +92,13 @@ public class ChatSessionService(
         }
 
         Conversations = await repo.GetByUserAsync(userId, ct);
+        Notify();
+    }
+
+    public async Task EnsureSchemaOverviewLoadedAsync(CancellationToken ct = default)
+    {
+        if (SchemaOverview is not null) return;
+        SchemaOverview = await agent.GetSchemaOverviewAsync(ct);
         Notify();
     }
 

@@ -5,6 +5,20 @@
 @implements IDisposable
 
 <div class="hr-prompt-bar">
+    @if (Session.Messages.Count == 0 && Session.SchemaOverview is { Count: > 0 })
+    {
+        <MudPaper Class="pa-3 mb-3" Outlined="true">
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Data available to explore</MudText>
+            <MudExpansionPanels Elevation="0">
+                @foreach (var table in Session.SchemaOverview)
+                {
+                    <MudExpansionPanel Text="@table.TableName">
+                        <MudText Typo="Typo.body2">@string.Join(", ", table.Columns)</MudText>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        </MudPaper>
+    }
     <MudStack Row="true" AlignItems="AlignItems.End" Spacing="2">
         <MudTextField @bind-Value="_prompt"
                       InputId="prompt-textbox"
@@ -52,6 +66,7 @@
         var auth = await AuthStateProvider.GetAuthenticationStateAsync();
         _userId = auth.User.FindFirst(
             System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        await Session.EnsureSchemaOverviewLoadedAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
