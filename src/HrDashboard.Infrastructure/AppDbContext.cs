@@ -9,6 +9,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
 {
     public DbSet<Conversation> Conversations => Set<Conversation>();
     public DbSet<Message> Messages => Set<Message>();
+    public DbSet<UsageRecord> UsageRecords => Set<UsageRecord>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -31,6 +32,20 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
             e.HasKey(m => m.Id);
             e.Property(m => m.Content).IsRequired();
             e.Property(m => m.Role).HasConversion<string>();
+        });
+
+        builder.Entity<UsageRecord>(e =>
+        {
+            e.HasKey(u => u.Id);
+            e.Property(u => u.UserId).HasMaxLength(450).IsRequired();
+            e.Property(u => u.Provider).HasMaxLength(100).IsRequired();
+            e.Property(u => u.Model).HasMaxLength(200).IsRequired();
+            e.HasOne(u => u.Message)
+             .WithMany()
+             .HasForeignKey(u => u.MessageId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(u => u.UserId);
+            e.HasIndex(u => u.CreatedAt);
         });
     }
 }
