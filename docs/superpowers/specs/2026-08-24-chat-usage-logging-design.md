@@ -114,12 +114,18 @@ requirement every turn must satisfy.
 New EF Core migration adds the `UsageRecords` table, following the exact pattern of
 the existing `InitialCreate` migration.
 
-### Decision 3 — Dashboard page
+### Decision 3 — Dashboard as a full-screen dialog, not a new page
 
-A new page (e.g. `/usage`), reachable from the existing sidebar navigation, scoped to
-the signed-in user (matching how `Conversation`/`Message` already scope by
-`UserId`) — see Decision 4 for why this doesn't block a future admin view. Two views
-on one page:
+`Dashboard.razor` is this app's only `@page` route (`/`) — it has never had a second
+route. Rather than introduce routing for the first time, the usage dashboard reuses
+the pattern already established in `MainLayout.razor` for the results panel:
+a `DialogService.ShowAsync<UsageDashboard>(...)` call with `FullScreen = true`,
+triggered by a new icon button in the sidebar. No new route, no navigation state, no
+auth-guard-on-a-new-route question to answer — the existing `[Authorize]`-gated
+component tree already covers it since the dialog renders inside the same
+authenticated circuit. Scoped to the signed-in user (matching how
+`Conversation`/`Message` already scope by `UserId`) — see Decision 4 for why this
+doesn't block a future admin view. Two views inside the dialog:
 
 - A bar chart of total tokens per day over the last 30 days, using the same
   `MudChart` component already used in `ResultsPanel.razor` — one visual answer to
@@ -153,8 +159,8 @@ feature nobody has asked to use yet would be scope creep beyond what this pass n
 | `src/HrDashboard.Infrastructure/Migrations/` | New migration adding the `UsageRecords` table. |
 | `src/HrDashboard.Infrastructure/IUsageRepository.cs` + implementation | New repository: `AddUsageRecordAsync`, plus read methods for the dashboard (daily totals, provider/model breakdown), both scoped by `UserId`. |
 | `src/HrDashboard.Web/Services/ChatSessionService.cs` | `SendAsync` captures the `MessageDisplay` already returned by `repo.AddMessageAsync(...)` (currently discarded) for its `Id`, reads `agent.LastTurnUsage`, and writes a `UsageRecord` via `IUsageRepository` when non-null. |
-| `src/HrDashboard.Web/Components/Pages/` | New `Usage.razor` (or similar) dashboard page: chart + breakdown table. |
-| `src/HrDashboard.Web/Components/Layout/` | Sidebar navigation link to the new page. |
+| `src/HrDashboard.Web/Components/Chat/` | New `UsageDashboard.razor` component: chart + breakdown table, shown via `DialogService.ShowAsync`. |
+| `src/HrDashboard.Web/Components/Layout/MainLayout.razor` | New sidebar icon button that opens `UsageDashboard` as a full-screen dialog, mirroring the existing `OpenResultsFullScreen` method. |
 
 ## Testing
 
@@ -173,7 +179,7 @@ feature nobody has asked to use yet would be scope creep beyond what this pass n
   known limitation (a turn against that provider simply produces no `UsageRecord`,
   per Decision 2's "passive log, not a requirement every turn must satisfy") rather
   than treating it as a defect to work around.
-- No automated test for the dashboard page itself — `src/HrDashboard.Web` has no
+- No automated test for the dashboard dialog itself — `src/HrDashboard.Web` has no
   xUnit test project (a pre-existing, accepted project characteristic); verify via
   live browser testing instead, consistent with how the confirm-dialog feature's UI
   layer was verified.
