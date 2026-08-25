@@ -24,29 +24,6 @@ public class HrAgentServiceTests
         return new ChatResponse([msg]);
     }
 
-    // Helper: fake IAsyncEnumerable<ChatResponseUpdate> from chunks
-    private static async IAsyncEnumerable<ChatResponseUpdate> FakeStream(
-        params string[] chunks)
-    {
-        foreach (var chunk in chunks)
-        {
-            yield return new ChatResponseUpdate(ChatRole.Assistant, chunk);
-            await Task.CompletedTask;
-        }
-    }
-
-    // Helper: fake IAsyncEnumerable<ChatResponseUpdate> from full updates (not just text),
-    // for tests that need to include non-text content like UsageContent.
-    private static async IAsyncEnumerable<ChatResponseUpdate> FakeStreamUpdates(
-        params ChatResponseUpdate[] updates)
-    {
-        foreach (var update in updates)
-        {
-            yield return update;
-            await Task.CompletedTask;
-        }
-    }
-
     private static HrAgentService Build(IChatClient client)
         => new(client, [], NullLogger<HrAgentService>.Instance);
 
@@ -163,25 +140,21 @@ public class HrAgentServiceTests
             chunks.Add(chunk);
 
         chunks.Should().ContainSingle().Which.Should().Be("Hello world");
-        // GetStreamingResponseAsync must NOT have been called (Phase 2 skipped)
         client.DidNotReceive().GetStreamingResponseAsync(
             Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task AskStreamAsync_WithToolCalls_StreamsPhase2()
+    public async Task AskStreamAsync_WithToolCalls_YieldsFinalRoundTextDirectly()
     {
         var client = Substitute.For<IChatClient>();
 
-        // Phase 1: one tool-call round, then break (no-calls response)
+        // One tool-call round, then a final round with no calls — its text IS the answer,
+        // no second (streaming) call should be made to re-generate it.
         client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
               .Returns(
                   Task.FromResult(ToolCallResponse("GetData")),
-                  Task.FromResult(TextResponse(string.Empty))); // breaks the loop
-
-        // Phase 2 stream
-        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
-              .Returns(FakeStream("Hello ", "world"));
+                  Task.FromResult(TextResponse("Hello world")));
 
         var sut    = Build(client);
         var chunks = new List<string>();
@@ -189,7 +162,9 @@ public class HrAgentServiceTests
         await foreach (var chunk in sut.AskStreamAsync([], "query"))
             chunks.Add(chunk);
 
-        chunks.Should().Equal("Hello ", "world");
+        chunks.Should().ContainSingle().Which.Should().Be("Hello world");
+        client.DidNotReceive().GetStreamingResponseAsync(
+            Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -221,10 +196,7 @@ public class HrAgentServiceTests
         client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
               .Returns(
                   Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, [describeCall])])),
-                  Task.FromResult(TextResponse(string.Empty))); // breaks Phase 1 loop into Phase 2
-
-        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
-              .Returns(FakeStream("Which columns would you like to see?"));
+                  Task.FromResult(TextResponse("Which columns would you like to see?")));
 
         Func<string, string> describeTableFn = tableName => describeTableJson;
         var tools = new List<AITool> { AIFunctionFactory.Create(describeTableFn, "DescribeTable", null, null) };
@@ -247,10 +219,7 @@ public class HrAgentServiceTests
         client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
               .Returns(
                   Task.FromResult(ToolCallResponse("GetDeptHeadcount")),
-                  Task.FromResult(TextResponse(string.Empty)));
-
-        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
-              .Returns(FakeStream("""[{"label":"IT","value":5,"category":"Headcount"}] Done."""));
+                  Task.FromResult(TextResponse("""[{"label":"IT","value":5,"category":"Headcount"}] Done.""")));
 
         var sut = Build(client);
 
@@ -276,7 +245,7 @@ public class HrAgentServiceTests
     }
 
     [Fact]
-    public async Task AskStreamAsync_AccumulatesUsageAcrossPhase1AndPhase2()
+    public async Task AskStreamAsync_AccumulatesUsageAcrossRounds()
     {
         var client = Substitute.For<IChatClient>();
 
@@ -285,20 +254,13 @@ public class HrAgentServiceTests
         {
             Usage = new UsageDetails { InputTokenCount = 100, OutputTokenCount = 20, TotalTokenCount = 120 }
         };
-        var finalResponseWithUsage = new ChatResponse([new ChatMessage(ChatRole.Assistant, string.Empty)])
+        var finalResponseWithUsage = new ChatResponse([new ChatMessage(ChatRole.Assistant, "Hello world")])
         {
             Usage = new UsageDetails { InputTokenCount = 50, OutputTokenCount = 10, TotalTokenCount = 60 }
         };
 
         client.GetResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
               .Returns(Task.FromResult(toolCallResponseWithUsage), Task.FromResult(finalResponseWithUsage));
-
-        client.GetStreamingResponseAsync(Arg.Any<IList<ChatMessage>>(), Arg.Any<ChatOptions?>(), Arg.Any<CancellationToken>())
-              .Returns(FakeStreamUpdates(
-                  new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("Hello ")]),
-                  new ChatResponseUpdate(ChatRole.Assistant,
-                      [new TextContent("world"),
-                       new UsageContent(new UsageDetails { InputTokenCount = 200, OutputTokenCount = 30, TotalTokenCount = 230 })])));
 
         var sut = new HrAgentService(client, [], NullLogger<HrAgentService>.Instance, "TestProvider", "test-model");
 
@@ -307,9 +269,9 @@ public class HrAgentServiceTests
         sut.LastTurnUsage.Should().NotBeNull();
         sut.LastTurnUsage!.Provider.Should().Be("TestProvider");
         sut.LastTurnUsage.Model.Should().Be("test-model");
-        sut.LastTurnUsage.InputTokens.Should().Be(100 + 50 + 200);
-        sut.LastTurnUsage.OutputTokens.Should().Be(20 + 10 + 30);
-        sut.LastTurnUsage.TotalTokens.Should().Be(120 + 60 + 230);
+        sut.LastTurnUsage.InputTokens.Should().Be(100 + 50);
+        sut.LastTurnUsage.OutputTokens.Should().Be(20 + 10);
+        sut.LastTurnUsage.TotalTokens.Should().Be(120 + 60);
     }
 
     [Fact]

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using HrDashboard.Agents.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -386,13 +385,16 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         TurnUsageInfo? FinalizeUsage() =>
             anyUsageSeen ? new TurnUsageInfo(_providerName, _modelName, totalInputTokens, totalOutputTokens, totalTokens) : null;
 
-        // Phase 1: tool-use loop (non-streaming) to gather Oracle HR data.
-        // We do NOT add the final no-tool-call response to messages; Phase 2 streams it.
+        // Tool-use loop. The round that finally comes back with no tool calls IS the final
+        // answer — we used to discard its text and re-issue a second, separate streaming call
+        // over the identical accumulated context just to "stream" it, which doubled the LLM
+        // latency of every tool-using turn for no benefit (bug: perceived response time was
+        // ~2x a single generation). We now yield that round's text directly instead.
         for (int i = 0; i < MaxIterations; i++)
         {
             var roundStopwatch = Stopwatch.StartNew();
             var response = await _chatClient.GetResponseAsync(messages, toolOptions, ct);
-            _logger.LogInformation("Phase 1 round {Round}: model call took {ElapsedMs}ms", i, roundStopwatch.ElapsedMilliseconds);
+            _logger.LogInformation("Round {Round}: model call took {ElapsedMs}ms", i, roundStopwatch.ElapsedMilliseconds);
 
             if (response.Usage is { } roundUsage)
             {
@@ -411,20 +413,18 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
             if (calls.Count == 0)
             {
-                if (!toolsWereUsed)
-                {
-                    // Model answered without any tool calls — yield text directly (no extra API call)
-                    _logger.LogInformation("Agent streaming (no tools) completed in 1 round, {ElapsedMs}ms total", totalStopwatch.ElapsedMilliseconds);
-                    LastTurnUsage = FinalizeUsage();
-                    yield return response.Text ?? string.Empty;
-                    yield break;
-                }
-
-                // Tool data is in messages; fall through to Phase 2 for streaming final answer
+                var finalText = response.Text ?? string.Empty;
                 _logger.LogInformation(
-                    "Agent tool-use loop done after {Rounds} round(s) in {ElapsedMs}ms, streaming final answer",
-                    i, totalStopwatch.ElapsedMilliseconds);
-                break;
+                    "Agent streaming completed in {Rounds} round(s), {ElapsedMs}ms total", i + 1, totalStopwatch.ElapsedMilliseconds);
+
+                if (toolsWereUsed)
+                {
+                    LastPendingColumnOptions = tracker.Classify(finalText);
+                    LastDataSet = ResolveDataSet(tracker, finalText);
+                }
+                LastTurnUsage = FinalizeUsage();
+                yield return finalText;
+                yield break;
             }
 
             toolsWereUsed = true;
@@ -437,7 +437,6 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                 yield break;
             }
 
-            // Add tool-call messages and results; final answer is never added here
             foreach (var msg in response.Messages)
                 messages.Add(msg);
 
@@ -451,39 +450,6 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
                     [new FunctionResultContent(call.CallId, result)]));
             }
         }
-
-        // Phase 2: stream the final summarization over the accumulated tool context
-        var phase2Stopwatch = Stopwatch.StartNew();
-        var chunkCount = 0;
-        var fullTextBuilder = new StringBuilder();
-        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, ApplyProviderTuning(new ChatOptions()), ct))
-        {
-            foreach (var usageContent in update.Contents.OfType<UsageContent>())
-            {
-                anyUsageSeen = true;
-                totalInputTokens  += usageContent.Details.InputTokenCount ?? 0;
-                totalOutputTokens += usageContent.Details.OutputTokenCount ?? 0;
-                // Some providers populate input/output but not total — fall back to their
-                // sum rather than letting this update contribute 0 to the running total.
-                totalTokens       += usageContent.Details.TotalTokenCount ?? ((usageContent.Details.InputTokenCount ?? 0) + (usageContent.Details.OutputTokenCount ?? 0));
-            }
-
-            if (!string.IsNullOrEmpty(update.Text))
-            {
-                chunkCount++;
-                fullTextBuilder.Append(update.Text);
-                yield return update.Text;
-            }
-        }
-
-        var finalText = fullTextBuilder.ToString();
-        LastPendingColumnOptions = tracker.Classify(finalText);
-        LastDataSet = ResolveDataSet(tracker, finalText);
-        LastTurnUsage = FinalizeUsage();
-
-        _logger.LogInformation(
-            "Agent streaming final answer complete: {ChunkCount} chunk(s), phase 2 took {Phase2Ms}ms, {TotalMs}ms total",
-            chunkCount, phase2Stopwatch.ElapsedMilliseconds, totalStopwatch.ElapsedMilliseconds);
     }
 
     /// <summary>
