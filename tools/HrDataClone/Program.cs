@@ -98,4 +98,73 @@ static async Task EnsureSchemaAsync(SqlConnection connection)
     await using var command = connection.CreateCommand();
     command.CommandText = sql;
     await command.ExecuteNonQueryAsync();
+
+    // Views must be created in their own batch (CREATE VIEW can't share a batch with
+    // other statements), so each is wrapped in EXEC(...) dynamic SQL and run as its own
+    // command. They pre-join the schema's foreign-key relationships (see
+    // docs/superpowers/specs — the HR chat's SystemPrompt teaches the model these same
+    // relationships for manual joins) so a listing that touches a related table's name
+    // can be answered from a single DescribeTable + SELECT instead of the model having
+    // to reason out a join across two or three DescribeTable calls.
+    const string createEmployeesEnrichedView = """
+        IF OBJECT_ID('dbo.EMPLOYEES_ENRICHED') IS NULL
+        EXEC('
+            CREATE VIEW dbo.EMPLOYEES_ENRICHED AS
+            SELECT
+                e.EMPLOYEE_ID,
+                e.FIRST_NAME,
+                e.LAST_NAME,
+                e.EMAIL,
+                e.PHONE_NUMBER,
+                e.HIRE_DATE,
+                e.SALARY,
+                e.COMMISSION_PCT,
+                e.JOB_ID,
+                j.JOB_TITLE,
+                j.MIN_SALARY AS JOB_MIN_SALARY,
+                j.MAX_SALARY AS JOB_MAX_SALARY,
+                e.DEPARTMENT_ID,
+                d.DEPARTMENT_NAME,
+                e.MANAGER_ID,
+                m.FIRST_NAME + '' '' + m.LAST_NAME AS MANAGER_NAME,
+                l.CITY,
+                l.STATE_PROVINCE
+            FROM dbo.EMPLOYEES e
+            LEFT JOIN dbo.JOBS j ON e.JOB_ID = j.JOB_ID
+            LEFT JOIN dbo.DEPARTMENTS d ON e.DEPARTMENT_ID = d.DEPARTMENT_ID
+            LEFT JOIN dbo.EMPLOYEES m ON e.MANAGER_ID = m.EMPLOYEE_ID
+            LEFT JOIN dbo.LOCATIONS l ON d.LOCATION_ID = l.LOCATION_ID
+        ')
+        """;
+
+    await using (var viewCommand = connection.CreateCommand())
+    {
+        viewCommand.CommandText = createEmployeesEnrichedView;
+        await viewCommand.ExecuteNonQueryAsync();
+    }
+
+    const string createDepartmentsEnrichedView = """
+        IF OBJECT_ID('dbo.DEPARTMENTS_ENRICHED') IS NULL
+        EXEC('
+            CREATE VIEW dbo.DEPARTMENTS_ENRICHED AS
+            SELECT
+                d.DEPARTMENT_ID,
+                d.DEPARTMENT_NAME,
+                d.MANAGER_ID,
+                m.FIRST_NAME + '' '' + m.LAST_NAME AS MANAGER_NAME,
+                d.LOCATION_ID,
+                l.CITY,
+                l.STATE_PROVINCE,
+                l.COUNTRY_ID
+            FROM dbo.DEPARTMENTS d
+            LEFT JOIN dbo.EMPLOYEES m ON d.MANAGER_ID = m.EMPLOYEE_ID
+            LEFT JOIN dbo.LOCATIONS l ON d.LOCATION_ID = l.LOCATION_ID
+        ')
+        """;
+
+    await using (var viewCommand = connection.CreateCommand())
+    {
+        viewCommand.CommandText = createDepartmentsEnrichedView;
+        await viewCommand.ExecuteNonQueryAsync();
+    }
 }

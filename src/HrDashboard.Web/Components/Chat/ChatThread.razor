@@ -21,13 +21,35 @@
         else
         {
             <div class="msg-assistant">
-                @if (string.IsNullOrEmpty(msg.Content) && msg.IsStreaming)
+                @if (msg.IsStreaming && (string.IsNullOrEmpty(msg.Content) || !Session.ShowRawStreamingOutput))
                 {
-                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Thinking — this can take a minute or two</MudText>
+                    </MudStack>
                 }
                 else
                 {
-                    @msg.Content
+                    <span class="msg-content">@msg.Content</span>
+                    @if (msg.DataSet is not null)
+                    {
+                        <DataSetGrid DataSet="msg.DataSet" />
+                        @if (msg.DataSet.ChartRecommendation is not null)
+                        {
+                            var recommendation = msg.DataSet.ChartRecommendation;
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="mt-2">
+                                <MudText Typo="Typo.caption">
+                                    I can create a chart using @recommendation.XAxisColumn for the X-axis and @recommendation.YAxisColumn for the Y-axis.
+                                </MudText>
+                                <MudButton Variant="Variant.Outlined"
+                                           Size="Size.Small"
+                                           Disabled="@(msg.ChartConfirmed || Session.IsStreaming)"
+                                           OnClick="@(() => ConfirmChart(msg))">
+                                    Show chart
+                                </MudButton>
+                            </MudStack>
+                        }
+                    }
                     @if (msg.IsStreaming)
                     {
                         <span class="msg-streaming"></span>
@@ -94,6 +116,8 @@
         if (!msg.SelectedColumns.Remove(column))
             msg.SelectedColumns.Add(column);
     }
+
+    private void ConfirmChart(HrDashboard.Web.Services.MessageViewModel msg) => Session.ConfirmChart(msg);
 
     private async Task ConfirmColumnsAsync(HrDashboard.Web.Services.MessageViewModel msg)
     {

@@ -1,0 +1,39 @@
+@using System.Text.Json
+@using HrDashboard.Agents.Models
+
+<div class="hr-dataset-grid-wrap">
+    <MudDataGrid T="IReadOnlyDictionary<string, JsonElement>"
+                 Items="DataSet.Rows"
+                 Dense="true"
+                 Striped="true"
+                 Hover="true"
+                 Filterable="false"
+                 SortMode="SortMode.Single">
+        <Columns>
+            @foreach (var column in DataSet.Columns)
+            {
+                var columnName = column.Name;
+                <TemplateColumn Title="@columnName" Sortable="false">
+                    <CellTemplate Context="row">
+                        @FormatValue(row.Item.TryGetValue(columnName, out var value) ? value : default)
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+        </Columns>
+    </MudDataGrid>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public HrDataSet DataSet { get; set; } = null!;
+
+    private static string FormatValue(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.Undefined => "",
+        JsonValueKind.Null => "",
+        JsonValueKind.String => value.GetString() ?? "",
+        JsonValueKind.Number => value.ToString(),
+        JsonValueKind.True => "Yes",
+        JsonValueKind.False => "No",
+        _ => value.ToString()
+    };
+}

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using HrDashboard.Agents;
 using HrDashboard.Agents.Models;
@@ -11,14 +12,25 @@ public class ChatSessionService(
     IConversationRepository repo,
     IUsageRepository usage,
     IJSRuntime js,
-    ILogger<ChatSessionService> logger)
+    ILogger<ChatSessionService> logger,
+    bool showRawStreamingOutput = false)
 {
     public ConversationSummary? CurrentConversation { get; private set; }
     public List<MessageViewModel> Messages { get; } = [];
     public bool IsStreaming { get; private set; }
     public IReadOnlyList<HrMetricRow> CurrentMetrics { get; private set; } = [];
+    public HrDataSet? ConfirmedChartDataSet { get; private set; }
+    public HrChartRecommendation? ConfirmedChart { get; private set; }
     public List<ConversationSummary> Conversations { get; private set; } = [];
     public IReadOnlyList<TableOverview>? SchemaOverview { get; private set; }
+
+    // When false (default), ChatThread keeps showing the "Thinking..." indicator for the
+    // whole streaming phase instead of the raw accumulating text — a JSON-contract answer's
+    // first streamed chunks ARE the raw JSON array, which otherwise flashes on screen before
+    // SendAsync's post-processing below replaces it with the cleaned summary. The raw text is
+    // always available via the Debug-level log line in SendAsync regardless of this flag;
+    // set Chat:ShowRawStreamingOutput to true in appsettings.json to see it live in the UI too.
+    public bool ShowRawStreamingOutput { get; } = showRawStreamingOutput;
 
     public event Action? OnChange;
 
@@ -49,13 +61,20 @@ public class ChatSessionService(
         var rows = await repo.GetMessagesForDisplayAsync(conversationId, ct);
         foreach (var row in rows)
         {
+            HrDataSet? storedDataSet = null;
+            var hasDataSet = row.MetricsJson is not null
+                && HrDataSetParser.TryParse(row.MetricsJson, out storedDataSet);
+            var legacyMetrics = row.MetricsJson is not null && !hasDataSet
+                ? JsonSerializer.Deserialize<List<HrMetricRow>>(row.MetricsJson) ?? []
+                : [];
             var vm = new MessageViewModel
             {
                 Role = row.Role,
                 Content = row.Content,
-                Metrics = row.MetricsJson is not null
-                    ? JsonSerializer.Deserialize<List<HrMetricRow>>(row.MetricsJson) ?? []
-                    : null
+                DataSet = storedDataSet ?? (legacyMetrics.Count > 0
+                    ? HrDataSet.FromLegacyMetrics(legacyMetrics)
+                    : null),
+                Metrics = legacyMetrics.Count > 0 ? legacyMetrics : null
             };
             Messages.Add(vm);
             if (row.Role == MessageRole.Assistant && vm.Metrics?.Count > 0)
@@ -137,6 +156,8 @@ public class ChatSessionService(
         var assistantVm = MessageViewModel.StreamingAssistant();
         Messages.Add(assistantVm);
         IsStreaming = true;
+        ConfirmedChartDataSet = null;
+        ConfirmedChart = null;
         // Deliberately NOT clearing CurrentMetrics here: this runs before we know whether the
         // new request will even succeed. Clearing eagerly meant any error (a failed tool call,
         // a template error from the LLM provider, etc.) permanently blanked the results panel's
@@ -168,10 +189,44 @@ public class ChatSessionService(
                 assistantVm.SelectedColumns = pendingColumns.GetDefaultSelectedColumns();
             }
 
+            assistantVm.DataSet = agent.LastDataSet;
+            if (assistantVm.DataSet is not null)
+            {
+                assistantVm.Metrics = null;
+                CurrentMetrics = [];
+            }
+
+            // Raw model output before any cleanup — never shown to the end user (it can be a
+            // bare JSON array), but logged at Debug level for troubleshooting. Enable via
+            // Serilog:MinimumLevel:Override for this category, or turn on
+            // Chat:ShowRawStreamingOutput to see it live in the chat UI instead.
+            logger.LogDebug("Raw assistant response before cleanup for \"{Prompt}\": {Raw}", prompt, assistantVm.Content);
+
+            // A response that mentions "dataset" but HrDataSetParser couldn't parse it is a
+            // failed dataset attempt — most likely truncated mid-JSON by an output-length
+            // limit (confirmed live 2026-08-24: a wide, many-column listing cut off mid-row,
+            // e.g. `..."Min Salary":400` with no closing braces). This must never fall through
+            // to the legacy HrMetricParser heuristics below: those were built for the old
+            // label/value/category array and can misfire on the dataset shape's OWN "columns"
+            // array (itself a plausible-looking JSON array of objects) — TryParse would
+            // "successfully" parse that as a bogus empty-valued metrics array, and
+            // ExtractDisplayText would then return everything after its closing bracket (the
+            // still-truncated ",\"rows\":[..." fragment) as if it were the natural-language
+            // summary, leaking raw JSON into the chat bubble instead of an honest failure
+            // message.
+            var looksLikeFailedDatasetAttempt = assistantVm.DataSet is null
+                && (assistantVm.Content.Contains("\"dataset\"", StringComparison.OrdinalIgnoreCase)
+                    || assistantVm.Content.Contains("\"datasetMeta\"", StringComparison.OrdinalIgnoreCase));
+
             // Strip any tool-call/tool-result scaffolding the local LLM may have echoed
             // before the intended payload, then parse metrics from the cleaned response.
             var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);
-            var arrayFound = HrMetricParser.TryParse(cleaned, out var metrics);
+            if (assistantVm.DataSet is not null)
+                cleaned = HrDataSetParser.ExtractDisplayText(assistantVm.Content);
+            var arrayFound = false;
+            IReadOnlyList<HrMetricRow> metrics = [];
+            if (!looksLikeFailedDatasetAttempt)
+                arrayFound = HrMetricParser.TryParse(cleaned, out metrics);
             assistantVm.Metrics = metrics;
             // Only replace the results panel's data when this turn actually produced a new
             // metrics array. A turn that didn't (a fallback message, an iteration-limit notice,
@@ -186,8 +241,10 @@ public class ChatSessionService(
                 // See HrMetricParser.LooksLikeGenuineTextAnswer for why this distinction
                 // matters: a purely conversational answer ("who are you") that never
                 // attempted JSON is a legitimate response, not the bug-060 narration/
-                // scaffolding failure the fallback below exists to catch.
-                if (HrMetricParser.LooksLikeGenuineTextAnswer(cleaned))
+                // scaffolding failure the fallback below exists to catch. A failed dataset
+                // attempt always takes the fallback branch regardless of what
+                // LooksLikeGenuineTextAnswer would say about it.
+                if (!looksLikeFailedDatasetAttempt && HrMetricParser.LooksLikeGenuineTextAnswer(cleaned))
                 {
                     assistantVm.Content = cleaned;
                 }
@@ -222,8 +279,10 @@ public class ChatSessionService(
 
             // Persist assistant message with MetricsJson
             var persistStopwatch = Stopwatch.StartNew();
-            var metricsJson = metrics.Count > 0
-                ? JsonSerializer.Serialize(metrics)
+            var metricsJson = assistantVm.DataSet is not null
+                ? JsonSerializer.Serialize(new { dataset = assistantVm.DataSet })
+                : metrics.Count > 0
+                    ? JsonSerializer.Serialize(metrics)
                 : null;
             var savedMessage = await repo.AddMessageAsync(
                 conversationId, MessageRole.Assistant, assistantVm.Content, metricsJson, ct);
@@ -267,6 +326,46 @@ public class ChatSessionService(
             logger.LogInformation("SendAsync: total {ElapsedMs}ms for prompt \"{Prompt}\"", totalStopwatch.ElapsedMilliseconds, prompt);
             Notify();
         }
+    }
+
+    public bool ConfirmChart(MessageViewModel message)
+    {
+        var dataSet = message.DataSet;
+        var recommendation = dataSet?.ChartRecommendation;
+        if (dataSet is null || recommendation is null)
+            return false;
+
+        if (!dataSet.HasColumn(recommendation.XAxisColumn)
+            || !dataSet.HasColumn(recommendation.YAxisColumn))
+            return false;
+
+        var yColumn = dataSet.Columns.First(column =>
+            string.Equals(column.Name, recommendation.YAxisColumn, StringComparison.OrdinalIgnoreCase));
+        if (!string.Equals(yColumn.Type, "number", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        foreach (var row in dataSet.Rows)
+        {
+            if (!row.TryGetValue(recommendation.YAxisColumn, out var value)
+                || !TryGetNumber(value, out _))
+                return false;
+        }
+
+        ConfirmedChartDataSet = dataSet;
+        ConfirmedChart = recommendation;
+        message.ChartConfirmed = true;
+        Notify();
+        return true;
+    }
+
+    private static bool TryGetNumber(JsonElement value, out double number)
+    {
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out number))
+            return true;
+        number = 0.0;
+
+        return value.ValueKind == JsonValueKind.String
+            && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number);
     }
 
     private void Notify() => OnChange?.Invoke();

@@ -35,6 +35,41 @@ public class ToolCallTrackerTests
     }
 
     [Fact]
+    public void Observe_RunHrQueryCall_CapturesRawResult()
+    {
+        var tracker = new ToolCallTracker();
+        var call = new FunctionCallContent("call-1", "RunHrQuery", null);
+        const string rawResult = """[{"Department Name":"IT"}]""";
+
+        tracker.Observe(call, rawResult);
+
+        tracker.LastDataToolName.Should().Be("RunHrQuery");
+        tracker.LastDataToolResult.Should().Be(rawResult);
+    }
+
+    [Fact]
+    public void Observe_MultipleDataToolCalls_KeepsOnlyTheLastOne()
+    {
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "GetDeptHeadcount", null), "[{\"a\":1}]");
+        tracker.Observe(new FunctionCallContent("call-2", "RunHrQuery", null), "[{\"b\":2}]");
+
+        tracker.LastDataToolName.Should().Be("RunHrQuery");
+        tracker.LastDataToolResult.Should().Be("[{\"b\":2}]");
+    }
+
+    [Fact]
+    public void Observe_SchemaToolCall_DoesNotSetDataToolResult()
+    {
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" }), ValidDescribeTableJson);
+
+        tracker.LastDataToolName.Should().BeNull();
+        tracker.LastDataToolResult.Should().BeNull();
+    }
+
+    [Fact]
     public void Observe_ListTablesCall_DoesNotSetDataToolCalledOrColumns()
     {
         var tracker = new ToolCallTracker();
@@ -93,6 +128,26 @@ public class ToolCallTrackerTests
         result.Should().NotBeNull();
         result!.TableName.Should().Be("EMPLOYEES");
         result.Columns.Should().Equal("EMPLOYEE_ID", "FIRST_NAME", "SALARY");
+    }
+
+    [Fact]
+    public void Classify_TwoTablesDescribed_QualifiesColumnsByTable()
+    {
+        const string departmentsJson =
+            """[{"column_name":"DEPARTMENT_ID"},{"column_name":"DEPARTMENT_NAME"},{"column_name":"MANAGER_ID"}]""";
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "DEPARTMENTS" }), departmentsJson);
+        tracker.Observe(new FunctionCallContent("call-2", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" }), ValidDescribeTableJson);
+
+        var result = tracker.Classify("Which columns would you like to see?");
+
+        result.Should().NotBeNull();
+        result!.TableName.Should().Be("DEPARTMENTS, EMPLOYEES");
+        result.Columns.Should().Equal(
+            "DEPARTMENTS.DEPARTMENT_ID", "DEPARTMENTS.DEPARTMENT_NAME", "DEPARTMENTS.MANAGER_ID",
+            "EMPLOYEES.EMPLOYEE_ID", "EMPLOYEES.FIRST_NAME", "EMPLOYEES.SALARY");
     }
 
     [Fact]

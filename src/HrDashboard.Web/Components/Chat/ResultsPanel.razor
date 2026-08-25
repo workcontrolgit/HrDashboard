@@ -1,73 +1,51 @@
+@using System.Globalization
+@using System.Text.Json
 @inject ChatSessionService Session
 @implements IDisposable
 
-@if (Session.CurrentMetrics.Count == 0)
+@if (Session.ConfirmedChartDataSet is null || Session.ConfirmedChart is null)
 {
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;color:var(--mud-palette-text-secondary)">
         <MudIcon Icon="@Icons.Material.Filled.BarChart" Style="font-size:48px" />
-        <MudText Typo="Typo.body2" Class="mt-2">Results appear here</MudText>
+        <MudText Typo="Typo.body2" Class="mt-2">Confirm a chart from the chat to see it here</MudText>
     </div>
 }
 else
 {
-    @if (_chartable)
-    {
-        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
-            <MudText Typo="Typo.subtitle2">Visualization</MudText>
-            <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
-                       Variant="Variant.Outlined" Style="width:130px">
-                <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
-                <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
-                <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
-            </MudSelect>
-        </MudStack>
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+        <MudText Typo="Typo.subtitle2">@Session.ConfirmedChartDataSet.Title</MudText>
+        <MudSelect T="ChartType" @bind-Value="_chartType" Dense="true"
+                   Variant="Variant.Outlined" Style="width:130px">
+            <MudSelectItem Value="ChartType.Bar">Bar</MudSelectItem>
+            <MudSelectItem Value="ChartType.Donut">Donut</MudSelectItem>
+            <MudSelectItem Value="ChartType.Line">Line</MudSelectItem>
+        </MudSelect>
+    </MudStack>
 
-        <MudChart ChartType="_chartType"
-                  ChartSeries="@_chartSeries"
-                  XAxisLabels="@_chartLabels"
-                  InputData="@_inputData"
-                  InputLabels="@_chartLabels"
-                  Width="100%"
-                  Height="@(FullScreen ? "480px" : "220px")"
-                  Class="mb-4" />
-    }
-
-    <MudText Typo="Typo.subtitle2" Class="mb-2">
-        Data (@Session.CurrentMetrics.Count rows)
+    <MudText Typo="Typo.caption" Class="mb-2">
+        X-axis: @Session.ConfirmedChart.XAxisColumn | Y-axis: @Session.ConfirmedChart.YAxisColumn
     </MudText>
-    <MudDataGrid T="HrMetricRow"
-                 Items="Session.CurrentMetrics"
-                 Dense="true"
-                 Striped="true"
-                 Hover="true"
-                 Filterable="false"
-                 SortMode="SortMode.Single">
-        <Columns>
-            <PropertyColumn Property="r => r.Label"    Title="@_labelTitle"    Sortable="true" />
-            <PropertyColumn Property="r => r.Value"    Title="@_valueTitle"    Sortable="true" Format="N2" />
-            <PropertyColumn Property="r => r.Category" Title="@_categoryTitle" Sortable="true" />
-        </Columns>
-    </MudDataGrid>
+
+    <MudChart ChartType="_chartType"
+              ChartSeries="@_chartSeries"
+              XAxisLabels="@_chartLabels"
+              InputData="@_inputData"
+              InputLabels="@_chartLabels"
+              Width="100%"
+              Height="@(FullScreen ? "480px" : "220px")"
+              Class="mb-4" />
 }
 
 @code {
-    /// <summary>When true (shown inside the full-screen results dialog), the chart renders taller.</summary>
     [Parameter] public bool FullScreen { get; set; }
 
     private ChartType _chartType = ChartType.Bar;
     private List<ChartSeries> _chartSeries = [];
     private string[] _chartLabels = [];
     private double[] _inputData = [];
-    private bool _chartable = true;
-    private string _labelTitle = "Label";
-    private string _valueTitle = "Value";
-    private string _categoryTitle = "Category";
 
     protected override void OnInitialized()
     {
-        // Sync to whatever metrics already exist (e.g. this instance was just created
-        // inside the full-screen results dialog, after the sidebar's ResultsPanel already
-        // has data) — subscribing alone only catches *future* changes, not current state.
         BuildChart();
         Session.OnChange += OnSessionChange;
     }
@@ -80,20 +58,9 @@ else
 
     private void BuildChart()
     {
-        // A single response is one homogeneous result set — if the model marked any row
-        // non-chartable (e.g. a plain listing like "list employees"), treat the whole
-        // result as table-only rather than drawing a chart from a mix of shapes.
-        _chartable = Session.CurrentMetrics.Count > 0 && Session.CurrentMetrics.All(r => r.Chartable);
-
-        // Listing-style results carry their real field names (e.g. "Name"/"Salary") on
-        // every row for exactly this purpose; genuine metrics leave them null and keep the
-        // generic headers, which already mean something for an actual Label/Value/Category.
-        var first = Session.CurrentMetrics.FirstOrDefault();
-        _labelTitle = first?.LabelName ?? "Label";
-        _valueTitle = first?.ValueName ?? "Value";
-        _categoryTitle = first?.CategoryName ?? "Category";
-
-        if (!_chartable)
+        var dataSet = Session.ConfirmedChartDataSet;
+        var chart = Session.ConfirmedChart;
+        if (dataSet is null || chart is null)
         {
             _chartSeries = [];
             _chartLabels = [];
@@ -101,28 +68,49 @@ else
             return;
         }
 
-        // r.Label defaults to "" when the model omits it, but don't trust that guarantee
-        // here too — a null Label previously crashed the entire Blazor circuit (an unhandled
-        // NullReferenceException in a component render is fatal to the circuit, not just
-        // this one message), so this call site gets its own null-safety independent of
-        // whatever HrMetricRow's current default happens to be.
-        _chartLabels = Session.CurrentMetrics
-            .Select(r => r.Label ?? "")
-            .Select(label => label.Length <= 18 ? label : label[..18] + "…")
+        var points = dataSet.Rows
+            .Select(row =>
+            {
+                var label = row.TryGetValue(chart.XAxisColumn, out var labelValue)
+                    ? FormatLabel(labelValue)
+                    : "";
+                var value = row.TryGetValue(chart.YAxisColumn, out var numericValue)
+                    && TryGetNumber(numericValue, out var number)
+                    ? number
+                    : 0.0;
+                return (label, value);
+            })
             .ToArray();
 
-        // Bar/Line/StackedBar read ChartSeries + XAxisLabels; Donut/Pie instead read
-        // InputData + InputLabels — MudChart does not share one data model across chart types.
-        _inputData = Session.CurrentMetrics.Select(r => r.Value).ToArray();
-
+        _chartLabels = points.Select(point => point.label.Length <= 18
+                ? point.label
+                : point.label[..18] + "...")
+            .ToArray();
+        _inputData = points.Select(point => point.value).ToArray();
         _chartSeries =
         [
             new ChartSeries
             {
-                Name = "Value",
+                Name = chart.YAxisColumn,
                 Data = _inputData
             }
         ];
+    }
+
+    private static string FormatLabel(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? "",
+        JsonValueKind.Null or JsonValueKind.Undefined => "",
+        _ => value.ToString()
+    };
+
+    private static bool TryGetNumber(JsonElement value, out double number)
+    {
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out number))
+            return true;
+        number = 0.0;
+        return value.ValueKind == JsonValueKind.String
+            && double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number);
     }
 
     public void Dispose() => Session.OnChange -= OnSessionChange;

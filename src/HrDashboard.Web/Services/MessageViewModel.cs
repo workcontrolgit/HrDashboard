@@ -8,6 +8,8 @@ public class MessageViewModel
     public string Content { get; set; } = string.Empty;
     public bool IsStreaming { get; set; }
     public IReadOnlyList<HrMetricRow>? Metrics { get; set; }
+    public HrDataSet? DataSet { get; set; }
+    public bool ChartConfirmed { get; set; }
 
     /// <summary>Real columns offered for a listing-style clarification. Session-only —
     /// never persisted (see spec Design Decision 4).</summary>

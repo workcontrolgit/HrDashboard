@@ -148,7 +148,16 @@ try
         return new HrAgentService(chatClient, endpoint, provider, resolvedModel, logger);
     });
 
-    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>();
+    builder.Services.AddScoped<HrDashboard.Web.Services.ChatSessionService>(sp =>
+    {
+        var agentSvc = sp.GetRequiredService<IHrAgentService>();
+        var repo     = sp.GetRequiredService<IConversationRepository>();
+        var usage    = sp.GetRequiredService<IUsageRepository>();
+        var js       = sp.GetRequiredService<Microsoft.JSInterop.IJSRuntime>();
+        var logger   = sp.GetRequiredService<ILogger<HrDashboard.Web.Services.ChatSessionService>>();
+        var showRawStreamingOutput = builder.Configuration.GetValue<bool>("Chat:ShowRawStreamingOutput");
+        return new HrDashboard.Web.Services.ChatSessionService(agentSvc, repo, usage, js, logger, showRawStreamingOutput);
+    });
 
     // ── Blazor + MudBlazor ───────────────────────────────────────────────────
     builder.Services.AddRazorComponents()
