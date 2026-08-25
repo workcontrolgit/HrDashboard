@@ -40,7 +40,7 @@
     <MudStack Row="true" Wrap="Wrap.Wrap" Class="mt-2" Spacing="1">
         @foreach (var preset in _presets)
         {
-            <MudChip T="string" OnClick="() => SelectPreset(preset)"
+            <MudChip T="string" OnClick="() => SelectPresetAsync(preset)"
                      Color="Color.Default" Size="Size.Small"
                      Disabled="Session.IsStreaming">@preset</MudChip>
         }
@@ -82,7 +82,11 @@
         }
     }
 
-    private void SelectPreset(string preset) => _prompt = preset;
+    private async Task SelectPresetAsync(string preset)
+    {
+        if (Session.IsStreaming || _userId is null) return;
+        await Session.SendAsync(preset, _userId);
+    }
 
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
