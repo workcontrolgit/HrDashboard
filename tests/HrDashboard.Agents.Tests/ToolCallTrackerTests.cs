@@ -35,6 +35,41 @@ public class ToolCallTrackerTests
     }
 
     [Fact]
+    public void Observe_RunHrQueryCall_CapturesRawResult()
+    {
+        var tracker = new ToolCallTracker();
+        var call = new FunctionCallContent("call-1", "RunHrQuery", null);
+        const string rawResult = """[{"Department Name":"IT"}]""";
+
+        tracker.Observe(call, rawResult);
+
+        tracker.LastDataToolName.Should().Be("RunHrQuery");
+        tracker.LastDataToolResult.Should().Be(rawResult);
+    }
+
+    [Fact]
+    public void Observe_MultipleDataToolCalls_KeepsOnlyTheLastOne()
+    {
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "GetDeptHeadcount", null), "[{\"a\":1}]");
+        tracker.Observe(new FunctionCallContent("call-2", "RunHrQuery", null), "[{\"b\":2}]");
+
+        tracker.LastDataToolName.Should().Be("RunHrQuery");
+        tracker.LastDataToolResult.Should().Be("[{\"b\":2}]");
+    }
+
+    [Fact]
+    public void Observe_SchemaToolCall_DoesNotSetDataToolResult()
+    {
+        var tracker = new ToolCallTracker();
+        tracker.Observe(new FunctionCallContent("call-1", "DescribeTable",
+            new Dictionary<string, object?> { ["tableName"] = "EMPLOYEES" }), ValidDescribeTableJson);
+
+        tracker.LastDataToolName.Should().BeNull();
+        tracker.LastDataToolResult.Should().BeNull();
+    }
+
+    [Fact]
     public void Observe_ListTablesCall_DoesNotSetDataToolCalledOrColumns()
     {
         var tracker = new ToolCallTracker();

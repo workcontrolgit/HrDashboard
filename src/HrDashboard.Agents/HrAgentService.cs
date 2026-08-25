@@ -26,6 +26,21 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
     private const int MaxIterations = 20;
 
+    // Ollama's default runtime context window (4096 tokens for gemma4:12b here, confirmed via
+    // GET /api/ps) is well below what this SystemPrompt plus the MCP tool schemas plus a couple
+    // of turns of history needs — a second turn (e.g. the "Show columns: ..." follow-up to the
+    // Shape A clarifying question) silently exceeded it, producing a fast, empty, zero-tool-call
+    // response instead of an error. Cloud providers (Nvidia, Azure OpenAI) already run with a much
+    // larger context window, so this only needs to apply to Ollama.
+    private const int OllamaNumCtx = 8192;
+
+    private ChatOptions ApplyProviderTuning(ChatOptions options)
+    {
+        if (string.Equals(_providerName, "Ollama", StringComparison.OrdinalIgnoreCase))
+            options.AdditionalProperties = new AdditionalPropertiesDictionary { ["num_ctx"] = OllamaNumCtx };
+        return options;
+    }
+
     private const string SystemPrompt = """
         You are an AI HR Analytics Assistant connected to an HR database via MCP tools.
 
@@ -99,12 +114,13 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
            dataset JSON object in it.
         3. Once the user replies (in their next message) saying which columns they
            want, call RunHrQuery selecting exactly those columns — joining in the
-           related table for any foreign-key column, per the relationships above —
-           and report only what it actually returned, following the dataset
-           contract below — one "columns" entry per selected field, using its real,
-           human-readable name, and one "rows" entry per record returned. Omit
-           "chartRecommendation" unless one of the selected columns is genuinely
-           numeric and worth charting.
+           related table for any foreign-key column, per the relationships above.
+           Alias every selected column with its real, human-readable name directly
+           in the SQL (e.g. SELECT department_name AS "Department Name", ...) —
+           RunHrQuery's own result becomes the listing's data, so these aliases ARE
+           the column headers the user sees. Then report using the lightweight
+           listing contract below, never the full dataset contract — you never
+           re-type the rows RunHrQuery already returned.
 
         NEVER answer a listing question using only ListTables/DescribeTable results
         without first asking about columns as described above, and NEVER invent,
@@ -122,7 +138,10 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         different way. Only call a second tool if the first tool's result is genuinely
         missing something the user asked for. There is nothing to negotiate about
         columns for this shape — report the result directly using the dataset
-        contract below.
+        contract below. If you end up using RunHrQuery for this (the "last resort"
+        case above), alias its SELECT columns with human-readable names and use the
+        lightweight listing contract instead — the same rule as Shape A step 3,
+        since RunHrQuery's own result becomes the answer's data either way.
 
         Shape C — no matching tool:
         Say so honestly, in plain natural language. Do not call RunHrQuery or any
@@ -133,7 +152,35 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         natural language — do not invent a row or force a placeholder value just to
         satisfy the dataset format below.
 
-        --- Dataset contract for final data answers (Shape A step 3, and Shape B) ---
+        --- Lightweight listing contract, for a RunHrQuery result (Shape A step 3, and
+        Shape B's RunHrQuery fallback) ---
+
+        RunHrQuery's own result IS the listing's data — you never re-type it. Once
+        RunHrQuery has returned rows, include a small JSON object in your final
+        response instead of the full dataset contract below:
+        {"datasetMeta":{"title":"Employees by Department","chartRecommendation":null}}
+
+        "title" is a short human-readable heading for the listing (e.g. "Employees
+        in IT", "Departments and Managers").
+
+        Include "chartRecommendation" only when one of the columns you selected in
+        your SELECT is genuinely numeric and worth charting against another selected
+        column as its category (e.g. salary against employee name — not an ID or a
+        date). When you do, it must reference the exact column aliases you used in
+        SELECT: {"xAxisColumn":"<a real column alias>","yAxisColumn":"<a real
+        numeric column alias>","reason":"<one short phrase>"}. Otherwise set it to
+        null.
+
+        The datasetMeta JSON object must appear directly in the response text (not
+        in a code block). After it, add a one-sentence natural language summary of
+        what the query returned (e.g. how many rows, a notable value) — never
+        restate the actual row data; the user already sees it in the results grid.
+
+        If RunHrQuery returned zero rows, skip datasetMeta entirely — just say so in
+        plain language (e.g. "No employees match that department.").
+
+        --- Dataset contract for final data answers (Shape B's curated tools — GetTopEarnersByDepartment,
+        GetSalaryBreakdownByDepartment, GetDeptHeadcount, GetJobSalaryRanges) ---
 
         Whenever your answer reports actual HR data — a metric, a computed value, or a
         list of records from a tool result — include a JSON object in your final
@@ -179,8 +226,10 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         Y..."; simply invoke the tool directly. Any text you write, in any turn, is
         potentially shown to the user, so it must always be one of: silence (while
         only calling tools), the Shape A column-choice question, a Shape C or
-        conversational plain-language answer, or the final dataset JSON object plus
-        one-sentence summary — never a description of what you're doing.
+        conversational plain-language answer, or a final answer following whichever
+        contract applies (the lightweight datasetMeta object, or the full dataset
+        object) plus its one-sentence summary — never a description of what you're
+        doing.
         """;
 
     public HrAgentService(
@@ -251,7 +300,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         // response. AllowMultipleToolCalls=false only limits calls WITHIN one response — the
         // loop below still lets the model call schema tools across as many separate rounds as
         // it wants before its one-tool-per-round analytics call.
-        var options = new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false };
+        var options = ApplyProviderTuning(new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false });
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, SystemPrompt),
@@ -326,7 +375,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
 
         var totalStopwatch = Stopwatch.StartNew();
         // AllowMultipleToolCalls=false — see the identical setting in AskAsync for why.
-        var toolOptions = new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false };
+        var toolOptions = ApplyProviderTuning(new ChatOptions { Tools = [.. _tools], AllowMultipleToolCalls = false });
         var messages = BuildMessages(history, prompt);
         bool toolsWereUsed = false;
         var tracker = new ToolCallTracker();
@@ -407,7 +456,7 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         var phase2Stopwatch = Stopwatch.StartNew();
         var chunkCount = 0;
         var fullTextBuilder = new StringBuilder();
-        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, new ChatOptions(), ct))
+        await foreach (var update in _chatClient.GetStreamingResponseAsync(messages, ApplyProviderTuning(new ChatOptions()), ct))
         {
             foreach (var usageContent in update.Contents.OfType<UsageContent>())
             {
@@ -427,14 +476,38 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
             }
         }
 
-        LastPendingColumnOptions = tracker.Classify(fullTextBuilder.ToString());
-        HrDataSetParser.TryParse(fullTextBuilder.ToString(), out var streamedDataSet);
-        LastDataSet = streamedDataSet;
+        var finalText = fullTextBuilder.ToString();
+        LastPendingColumnOptions = tracker.Classify(finalText);
+        LastDataSet = ResolveDataSet(tracker, finalText);
         LastTurnUsage = FinalizeUsage();
 
         _logger.LogInformation(
             "Agent streaming final answer complete: {ChunkCount} chunk(s), phase 2 took {Phase2Ms}ms, {TotalMs}ms total",
             chunkCount, phase2Stopwatch.ElapsedMilliseconds, totalStopwatch.ElapsedMilliseconds);
+    }
+
+    /// <summary>
+    /// Prefers building the HrDataSet directly from RunHrQuery's own raw result over parsing
+    /// it back out of the model's generated text — the model only supplied a title/chart
+    /// recommendation (the "datasetMeta" contract), never the row data itself, so this keeps
+    /// token cost flat and removes output-truncation risk regardless of row count. Falls
+    /// back to the full "dataset" contract (Shape B's curated tools, where the model still
+    /// authors the whole payload since their results are small and bounded) whenever the raw
+    /// result isn't there or isn't a usable row array — including a genuinely empty result,
+    /// where the model's own plain-language "no rows matched" answer is left to stand as-is.
+    /// </summary>
+    private static HrDataSet? ResolveDataSet(ToolCallTracker tracker, string finalText)
+    {
+        if (string.Equals(tracker.LastDataToolName, "RunHrQuery", StringComparison.OrdinalIgnoreCase)
+            && tracker.LastDataToolResult is not null)
+        {
+            HrDataSetParser.TryParseMeta(finalText, out var meta);
+            if (HrDataSetParser.TryBuildFromRawResult(tracker.LastDataToolResult, meta, out var rawDataSet))
+                return rawDataSet;
+        }
+
+        HrDataSetParser.TryParse(finalText, out var parsedDataSet);
+        return parsedDataSet;
     }
 
     public async Task<IReadOnlyList<TableOverview>> GetSchemaOverviewAsync(CancellationToken ct = default)

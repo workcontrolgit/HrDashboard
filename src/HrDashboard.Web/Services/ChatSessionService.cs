@@ -202,12 +202,31 @@ public class ChatSessionService(
             // Chat:ShowRawStreamingOutput to see it live in the chat UI instead.
             logger.LogDebug("Raw assistant response before cleanup for \"{Prompt}\": {Raw}", prompt, assistantVm.Content);
 
+            // A response that mentions "dataset" but HrDataSetParser couldn't parse it is a
+            // failed dataset attempt — most likely truncated mid-JSON by an output-length
+            // limit (confirmed live 2026-08-24: a wide, many-column listing cut off mid-row,
+            // e.g. `..."Min Salary":400` with no closing braces). This must never fall through
+            // to the legacy HrMetricParser heuristics below: those were built for the old
+            // label/value/category array and can misfire on the dataset shape's OWN "columns"
+            // array (itself a plausible-looking JSON array of objects) — TryParse would
+            // "successfully" parse that as a bogus empty-valued metrics array, and
+            // ExtractDisplayText would then return everything after its closing bracket (the
+            // still-truncated ",\"rows\":[..." fragment) as if it were the natural-language
+            // summary, leaking raw JSON into the chat bubble instead of an honest failure
+            // message.
+            var looksLikeFailedDatasetAttempt = assistantVm.DataSet is null
+                && (assistantVm.Content.Contains("\"dataset\"", StringComparison.OrdinalIgnoreCase)
+                    || assistantVm.Content.Contains("\"datasetMeta\"", StringComparison.OrdinalIgnoreCase));
+
             // Strip any tool-call/tool-result scaffolding the local LLM may have echoed
             // before the intended payload, then parse metrics from the cleaned response.
             var cleaned = HrMetricParser.StripScaffolding(assistantVm.Content);
             if (assistantVm.DataSet is not null)
                 cleaned = HrDataSetParser.ExtractDisplayText(assistantVm.Content);
-            var arrayFound = HrMetricParser.TryParse(cleaned, out var metrics);
+            var arrayFound = false;
+            IReadOnlyList<HrMetricRow> metrics = [];
+            if (!looksLikeFailedDatasetAttempt)
+                arrayFound = HrMetricParser.TryParse(cleaned, out metrics);
             assistantVm.Metrics = metrics;
             // Only replace the results panel's data when this turn actually produced a new
             // metrics array. A turn that didn't (a fallback message, an iteration-limit notice,
@@ -222,8 +241,10 @@ public class ChatSessionService(
                 // See HrMetricParser.LooksLikeGenuineTextAnswer for why this distinction
                 // matters: a purely conversational answer ("who are you") that never
                 // attempted JSON is a legitimate response, not the bug-060 narration/
-                // scaffolding failure the fallback below exists to catch.
-                if (HrMetricParser.LooksLikeGenuineTextAnswer(cleaned))
+                // scaffolding failure the fallback below exists to catch. A failed dataset
+                // attempt always takes the fallback branch regardless of what
+                // LooksLikeGenuineTextAnswer would say about it.
+                if (!looksLikeFailedDatasetAttempt && HrMetricParser.LooksLikeGenuineTextAnswer(cleaned))
                 {
                     assistantVm.Content = cleaned;
                 }

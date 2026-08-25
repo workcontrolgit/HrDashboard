@@ -16,6 +16,16 @@ internal sealed class ToolCallTracker
     public string? LastDescribeTableName { get; private set; }
     public IReadOnlyList<string>? LastDescribeTableColumns { get; private set; }
 
+    // The raw result of the most recent non-schema ("data") tool call this turn, kept so
+    // HrAgentService can build the final HrDataSet directly from the real query result
+    // instead of asking the model to re-transcribe every row as its own output — the model
+    // only needs to supply a title and chart recommendation, not the data itself. This
+    // keeps token cost flat regardless of row count and removes the output-truncation
+    // failure mode entirely for large results (see bug: raw JSON leaking into the chat
+    // bubble when the model ran out of output length mid-transcription).
+    public string? LastDataToolName { get; private set; }
+    public string? LastDataToolResult { get; private set; }
+
     // Accumulates EVERY DescribeTable call in the turn (not just the last), so a listing
     // that spans a foreign-key relationship (e.g. departments + their manager's name from
     // EMPLOYEES) can offer columns from all described tables — grounded in real schema
@@ -34,6 +44,8 @@ internal sealed class ToolCallTracker
         if (!isSchemaTool)
         {
             DataToolCalled = true;
+            LastDataToolName = call.Name;
+            LastDataToolResult = SchemaJsonParser.ExtractStringResult(result);
             return;
         }
 
