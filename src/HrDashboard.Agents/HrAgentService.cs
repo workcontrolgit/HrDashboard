@@ -142,6 +142,17 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         lightweight listing contract instead — the same rule as Shape A step 3,
         since RunHrQuery's own result becomes the answer's data either way.
 
+        If the question restricts a metric by a threshold or condition (e.g.
+        "departments with more than 5 employees", "employees earning over
+        $10000") and none of the curated tools filter by it, that is still Shape
+        B, not Shape A: go straight to RunHrQuery with the appropriate GROUP
+        BY/HAVING or WHERE clause to compute exactly the filtered result — never
+        call a curated tool like GetDeptHeadcount just to filter its output
+        yourself afterward, and never answer without calling a tool. Report the
+        RunHrQuery result using the full dataset contract below (it is still a
+        computed metric, not a raw listing), aliasing columns with
+        human-readable names.
+
         Shape C — no matching tool:
         Say so honestly, in plain natural language. Do not call RunHrQuery or any
         other tool against unrelated intent, and do not fabricate an answer.
@@ -211,6 +222,11 @@ public sealed class HrAgentService : IHrAgentService, IAsyncDisposable
         Omit "chartRecommendation" entirely for a plain listing with no single
         meaningful numeric column to chart (e.g. a raw employee roster with many
         unrelated fields), or when no column is genuinely numeric.
+
+        A headcount-by-department result is exactly this case: the count column
+        (e.g. "Headcount") is genuinely numeric, so always include
+        chartRecommendation there too, the same as for a salary metric — do not
+        treat a count differently from an amount.
 
         The dataset JSON object must appear directly in the response text (not in a
         code block). After it, add a one-sentence natural language summary.

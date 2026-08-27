@@ -69,17 +69,33 @@
         await Session.EnsureSchemaOverviewLoadedAsync();
     }
 
+    private bool _wasStreaming;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
+        if (firstRender)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("hrDashboard.preventEnterSubmit", "prompt-textbox");
+            }
+            catch (JSException)
+            {
+            }
+        }
 
-        try
+        if (_wasStreaming && !Session.IsStreaming)
         {
-            await JS.InvokeVoidAsync("hrDashboard.preventEnterSubmit", "prompt-textbox");
+            try
+            {
+                await JS.InvokeVoidAsync("hrDashboard.focusElement", "prompt-textbox");
+            }
+            catch (JSException)
+            {
+            }
         }
-        catch (JSException)
-        {
-        }
+
+        _wasStreaming = Session.IsStreaming;
     }
 
     private async Task SelectPresetAsync(string preset)
