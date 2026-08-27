@@ -207,12 +207,20 @@ public static class HrDataSetParser
             // objectStart/objectEnd bound only the VALUE of the "dataset"/"datasetMeta" key
             // (the same scope TryParse/TryParseMeta deserialize) — the wrapping object's own
             // closing brace, e.g. the outer "}" in {"dataset": {...}}, still follows and must
-            // be consumed too, or it leaks into the display text as a stray leading "}".
+            // be consumed too, or it leaks into the display text as a stray leading "}". Some
+            // local models (confirmed live with Ollama/gemma4:12b once tool schemas are present
+            // in the same request that produces the final answer) tack on more than one extra
+            // "}" beyond the wrapper's own — so consume every stray closing brace here, not just
+            // one, until real text (or end of string) is reached.
             var afterValue = objectEnd + 1;
-            while (afterValue < text.Length && char.IsWhiteSpace(text[afterValue]))
+            while (true)
+            {
+                while (afterValue < text.Length && char.IsWhiteSpace(text[afterValue]))
+                    afterValue++;
+                if (afterValue >= text.Length || text[afterValue] != '}')
+                    break;
                 afterValue++;
-            if (afterValue < text.Length && text[afterValue] == '}')
-                afterValue++;
+            }
 
             return text[afterValue..].Trim();
         }

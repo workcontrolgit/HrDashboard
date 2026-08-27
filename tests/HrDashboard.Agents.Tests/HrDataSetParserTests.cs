@@ -190,4 +190,20 @@ public class HrDataSetParserTests
 
         displayText.Should().Be("Here are the departments.");
     }
+
+    [Fact]
+    public void ExtractDisplayText_ExtraStrayClosingBrace_StripsAllOfThem()
+    {
+        // Confirmed live with Ollama/gemma4:12b: once tool schemas are present in the same
+        // request that produces the final answer, the model sometimes tacks on more than one
+        // extra "}" beyond the wrapping object's own.
+        const string response = """
+            {"dataset":{"title":"Salary","columns":[{"name":"Department"}],"rows":[{"Department":"IT"}]}}}
+            The average salaries are shown above.
+            """;
+
+        var displayText = HrDataSetParser.ExtractDisplayText(response);
+
+        displayText.Should().Be("The average salaries are shown above.");
+    }
 }

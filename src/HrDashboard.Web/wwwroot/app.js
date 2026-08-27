@@ -13,5 +13,9 @@ window.hrDashboard = {
         el.addEventListener("keydown", function (e) {
             if (e.key === "Enter" && !e.shiftKey) e.preventDefault();
         });
+    },
+    focusElement: function (elementId) {
+        var el = document.getElementById(elementId);
+        if (el) el.focus();
     }
 };
