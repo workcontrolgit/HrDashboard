@@ -23,3 +23,7 @@ logs/
 
 # Local git worktrees used for isolated feature-branch work
 .worktrees/
+
+# Local-only data exports (e.g. Oracle table dumps used to build AI Foundry
+# Knowledge indexes) - never commit real/synthetic HR data to the repo
+.local-data/
